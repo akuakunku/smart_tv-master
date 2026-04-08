@@ -89,5 +89,6 @@
   "main": "expo-router/entry",
   "android": {
     "package": "com.chesko25.smarttv"
-  }
+  },
+  "packageManager": "yarn@4.13.0"
 }
