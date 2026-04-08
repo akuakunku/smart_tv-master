@@ -11,6 +11,7 @@ import {
   Animated,
   Dimensions,
   Platform,
+  StatusBar,
 } from "react-native";
 import { useRouter } from "expo-router";
 import useM3uParse from "../../hooks/M3uParse";
@@ -32,6 +33,7 @@ const LiveTV = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const flatListRef = useRef<FlatList>(null);
 
   // Filter channels by selected group and search query
   const filteredChannels = useMemo(() => {
@@ -52,6 +54,11 @@ const LiveTV = () => {
   const sortedGroups = useMemo(() => {
     return [...groups].sort((a, b) => a.localeCompare(b));
   }, [groups]);
+
+  // Get channel count per group
+  const getChannelCount = useCallback((group: string) => {
+    return channels.filter(ch => ch.group === group).length;
+  }, [channels]);
 
   const hideTabBar = useCallback(() => {
     const parent = navigation.getParent();
@@ -109,6 +116,10 @@ const LiveTV = () => {
     setSelectedGroup(group);
     setSearchQuery("");
     hideTabBar();
+    // Scroll to top when group selected
+    setTimeout(() => {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    }, 100);
   }, [hideTabBar]);
 
   const handleBack = useCallback(() => {
@@ -117,55 +128,58 @@ const LiveTV = () => {
     showTabBar();
   }, [showTabBar]);
 
+  const handleChannelPress = useCallback((url: string) => {
+    navigation.navigate('PlayerScreen', { url });
+  }, [navigation]);
+
   const renderChannelItem = useCallback(({ item }: { item: any }) => (
     <LiveTVCard
       channel={item}
       isActive={false}
-      onPress={() => {
-        navigation.navigate('PlayerScreen', { url: item.url });
-      }}
+      onPress={() => handleChannelPress(item.url)}
     />
-  ), [navigation]);
+  ), [handleChannelPress]);
 
-  const renderGroupItem = useCallback(({ item }: { item: string }) => (
-    <TouchableOpacity
-      style={styles.groupCard}
-      onPress={() => handleGroupSelect(item)}
-      activeOpacity={0.8}
-    >
-      <ImageBackground
-        source={DEFAULT_CATEGORY_IMAGE}
-        style={styles.groupImage}
-        imageStyle={{ borderRadius: 12 }}
+  const renderGroupItem = useCallback(({ item }: { item: string }) => {
+    const channelCount = getChannelCount(item);
+    return (
+      <TouchableOpacity
+        style={styles.groupCard}
+        onPress={() => handleGroupSelect(item)}
+        activeOpacity={0.8}
       >
-        <View style={styles.overlay} />
-        <View style={styles.groupIconContainer}>
-          <Ionicons name="tv-outline" size={28} color="#edec25" />
-        </View>
-        <Text style={styles.groupText} numberOfLines={2}>
-          {item}
-        </Text>
-        <View style={styles.channelCountBadge}>
-          <Text style={styles.channelCountText}>
-            {channels.filter(ch => ch.group === item).length}
+        <ImageBackground
+          source={DEFAULT_CATEGORY_IMAGE}
+          style={styles.groupImage}
+          imageStyle={{ borderRadius: 12 }}
+        >
+          <View style={styles.overlay} />
+          <View style={styles.groupIconContainer}>
+            <Ionicons name="tv-outline" size={28} color="#edec25" />
+          </View>
+          <Text style={styles.groupText} numberOfLines={2}>
+            {item}
           </Text>
-        </View>
-      </ImageBackground>
-    </TouchableOpacity>
-  ), [handleGroupSelect, channels]);
+          <View style={styles.channelCountBadge}>
+            <Text style={styles.channelCountText}>{channelCount}</Text>
+          </View>
+        </ImageBackground>
+      </TouchableOpacity>
+    );
+  }, [handleGroupSelect, getChannelCount]);
 
   const renderEmptyComponent = useCallback(() => (
     <View style={styles.emptyContainer}>
       <Ionicons name="tv-outline" size={64} color="#555" />
       <Text style={styles.emptyText}>
-        {searchQuery ? "No channels found" : "No channels in this group"}
+        {searchQuery ? "Tidak ada channel yang ditemukan" : "Tidak ada channel dalam grup ini"}
       </Text>
       {searchQuery && (
         <TouchableOpacity 
           style={styles.clearSearchButton}
           onPress={() => setSearchQuery("")}
         >
-          <Text style={styles.clearSearchText}>Clear Search</Text>
+          <Text style={styles.clearSearchText}>Hapus Pencarian</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -176,6 +190,7 @@ const LiveTV = () => {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
         <View style={styles.loadingContainer}>
           <LottieView
             source={require("../../assets/animations/loading.json")}
@@ -192,16 +207,17 @@ const LiveTV = () => {
   if (error) {
     return (
       <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
         <View style={styles.errorContainer}>
           <Ionicons name="alert-circle-outline" size={64} color="#ff4444" />
           <Text style={styles.errorText}>Error: {error}</Text>
           <TouchableOpacity
             style={styles.reloadButton}
-            onPress={refetch}
+            onPress={onRefresh}
             activeOpacity={0.7}
           >
             <Ionicons name="refresh-outline" size={20} color="#fff" />
-            <Text style={styles.reloadButtonText}>Reload</Text>
+            <Text style={styles.reloadButtonText}>Muat Ulang</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -211,6 +227,8 @@ const LiveTV = () => {
   if (selectedGroup) {
     return (
       <Animated.View style={[styles.container, { opacity: fadeAnim, paddingTop: top }]}>
+        <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+        
         <View style={styles.channelHeader}>
           <TouchableOpacity
             style={styles.backButton}
@@ -218,20 +236,22 @@ const LiveTV = () => {
             activeOpacity={0.7}
           >
             <Ionicons name="arrow-back" size={20} color="#fff" />
-            <Text style={styles.backText}>Back</Text>
+            <Text style={styles.backText}>Kembali</Text>
           </TouchableOpacity>
           
           <Text style={styles.groupTitle} numberOfLines={1}>
             {selectedGroup}
           </Text>
-        
+          
+          <View style={styles.headerRightPlaceholder} />
         </View>
 
         <FlatList
+          ref={flatListRef}
           key={`channels-${selectedGroup}`}
           data={filteredChannels}
           numColumns={3}
-          keyExtractor={(item) => `${item.url}-${item.name}`}
+          keyExtractor={(item, index) => `${item.url}-${index}`}
           contentContainerStyle={styles.channelList}
           renderItem={renderChannelItem}
           refreshControl={
@@ -247,6 +267,7 @@ const LiveTV = () => {
           initialNumToRender={12}
           maxToRenderPerBatch={15}
           windowSize={10}
+          removeClippedSubviews={Platform.OS === 'android'}
         />
       </Animated.View>
     );
@@ -254,10 +275,12 @@ const LiveTV = () => {
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim, paddingTop: top }]}>
+      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+      
       <View style={styles.header}>
         <Text style={styles.title}>📺 LIVE TV</Text>
         <Text style={styles.subtitle}>
-          {sortedGroups.length} Categories • {channels.length} Channels
+          {sortedGroups.length} Kategori • {channels.length} Channel
         </Text>
       </View>
 
@@ -280,6 +303,7 @@ const LiveTV = () => {
         initialNumToRender={10}
         maxToRenderPerBatch={12}
         windowSize={10}
+        removeClippedSubviews={Platform.OS === 'android'}
       />
     </Animated.View>
   );
@@ -288,7 +312,7 @@ const LiveTV = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.background || "#0a0a0a",
     paddingHorizontal: 12,
   },
   loadingContainer: {
@@ -369,10 +393,8 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontSize: 12,
   },
-  searchButton: {
-    backgroundColor: '#333',
-    padding: 8,
-    borderRadius: 8,
+  headerRightPlaceholder: {
+    width: 60,
   },
   groupTitle: {
     color: "#fff",
@@ -385,7 +407,7 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   groupCard: {
-    width: (width - 40) / 2,
+    flex: 1,
     margin: 6,
     borderRadius: 12,
     overflow: "hidden",

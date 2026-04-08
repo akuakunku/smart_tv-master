@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useEffect, Suspense, useMemo } from "react";
-import { 
-  StyleSheet, 
-  View, 
-  Text, 
-  Image, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  BackHandler, 
+import {
+  StyleSheet,
+  View,
+  Text,
+  Image,
+  TouchableOpacity,
+  SafeAreaView,
+  BackHandler,
   ActivityIndicator,
   Platform,
   FlatList,
@@ -74,46 +74,47 @@ function HomeTabs() {
         tabBarActiveTintColor: Colors.primary,
         tabBarInactiveTintColor: "#888",
         tabBarStyle: {
-          backgroundColor: "#0a0a0a", // Sedikit lebih terang dari hitam pekat
+          backgroundColor: "#0a0a0a",
           borderTopWidth: 1,
           borderTopColor: "#222",
           height: Platform.OS === 'ios' ? 90 : 70,
           paddingBottom: Platform.OS === 'ios' ? 25 : 12,
           paddingTop: 8,
         },
+        tabBarHideOnKeyboard: true,
       })}
     >
-      <Tab.Screen 
-        name="HomeScreen" 
-        component={HomeScreen} 
-        options={{ 
+      <Tab.Screen
+        name="HomeScreen"
+        component={HomeScreen}
+        options={{
           tabBarLabel: 'Home',
           tabBarIcon: (p) => <TabBarIcon name="home" {...p} />
-        }} 
+        }}
       />
-      <Tab.Screen 
-        name="LiveTvScreen" 
-        component={LiveTvScreen} 
-        options={{ 
+      <Tab.Screen
+        name="LiveTvScreen"
+        component={LiveTvScreen}
+        options={{
           tabBarLabel: 'Live',
           tabBarIcon: (p) => <TabBarIcon name="tv" {...p} />
-        }} 
+        }}
       />
-      <Tab.Screen 
-        name="PlayerScreen" 
-        component={PlayerScreen} 
-        options={{ 
-          tabBarLabel: 'Player',
-          tabBarIcon: (p) => <TabBarIcon name="play-circle" {...p} />
-        }} 
-      />
-      <Tab.Screen 
-        name="VodScreen" 
-        component={VodScreen} 
-        options={{ 
+      <Tab.Screen
+        name="VodScreen"
+        component={VodScreen}
+        options={{
           tabBarLabel: 'VOD',
           tabBarIcon: (p) => <TabBarIcon name="videocam" {...p} />
-        }} 
+        }}
+      />
+      <Tab.Screen
+        name="PlayerScreen"
+        component={PlayerScreen}
+        options={{
+          tabBarLabel: 'Player',
+          tabBarIcon: (p) => <TabBarIcon name="play-circle" {...p} />
+        }}
       />
       <Tab.Screen
         name="ProfileScreen"
@@ -136,7 +137,8 @@ const CustomDrawerContent = React.memo(({ state, navigation, descriptors }: Cust
       try {
         const storedUser = await AsyncStorage.getItem('user');
         if (storedUser) {
-          setUser(JSON.parse(storedUser));
+          const parsedUser = JSON.parse(storedUser);
+          setUser(prev => ({ ...prev, ...parsedUser }));
           setAvatarError(false);
         }
       } catch (error) {
@@ -147,83 +149,139 @@ const CustomDrawerContent = React.memo(({ state, navigation, descriptors }: Cust
     loadUser();
     const handleUserUpdate = () => loadUser();
     userUpdateEmitter.on('userUpdate', handleUserUpdate);
-    return () => userUpdateEmitter.off('userUpdate', handleUserUpdate);
+
+    return () => {
+      userUpdateEmitter.off('userUpdate', handleUserUpdate);
+    };
   }, []);
 
   const handleExitApp = useCallback(() => {
-    Alert.alert('Keluar', 'Apakah Anda yakin ingin keluar?', [
-      { text: 'Batal', style: 'cancel' },
-      { text: 'Keluar', onPress: () => BackHandler.exitApp() }
-    ]);
+    Alert.alert(
+      'Keluar',
+      'Apakah Anda yakin ingin keluar?',
+      [
+        { text: 'Batal', style: 'cancel' },
+        { text: 'Keluar', onPress: () => BackHandler.exitApp() }
+      ],
+      { cancelable: true }
+    );
   }, []);
 
   const avatarSource = useMemo(() => {
     const defaultImg = require("../../assets/images/ic_launcher.png");
-    return avatarError || !user.avatar ? defaultImg : { uri: user.avatar };
+    if (avatarError || !user.avatar) return defaultImg;
+    if (user.avatar.startsWith('http://') || user.avatar.startsWith('https://')) {
+      return { uri: user.avatar };
+    }
+    return defaultImg;
   }, [user.avatar, avatarError]);
 
+  // PERBAIKAN: Filter drawer items yang valid
   const drawerItems = useMemo(() => {
+    const validRoutes = ['Home', 'FavoriteScreen', 'SearchScreen', 'EditUrl', 'EditEpg'];
+
     return state.routes
-      .filter((route: any) => {
-        const { options } = descriptors[route.key];
-        return options.drawerItemStyle?.display !== 'none';
-      })
+      .filter((route: any) => validRoutes.includes(route.name))
       .map((route: any) => {
         const { options } = descriptors[route.key];
         const isFocused = state.index === state.routes.findIndex((r: any) => r.key === route.key);
+
+        let iconName = 'ellipse-outline';
+        let displayName = options.title || route.name;
+
+        switch (route.name) {
+          case 'Home':
+            iconName = 'home-outline';
+            displayName = 'Beranda';
+            break;
+          case 'FavoriteScreen':
+            iconName = 'heart-outline';
+            displayName = 'Favorit';
+            break;
+          case 'SearchScreen':
+            iconName = 'search-outline';
+            displayName = 'Cari Channel';
+            break;
+          case 'EditUrl':
+            iconName = 'link-outline';
+            displayName = 'Kelola M3U';
+            break;
+          case 'EditEpg':
+            iconName = 'list-outline';
+            displayName = 'Kelola EPG';
+            break;
+        }
+
         return {
           key: route.key,
           name: route.name,
-          title: options.title || route.name,
-          icon: options.drawerIcon ? options.drawerIcon({ color: isFocused ? Colors.primary : '#888', size: 22 }).props.name : 'ellipse-outline',
+          title: displayName,
+          icon: iconName,
           focused: isFocused,
         };
       });
   }, [state.routes, state.index, descriptors]);
 
+  const handleNavigation = useCallback((itemName: string) => {
+    navigation.closeDrawer();
+    navigation.navigate(itemName);
+  }, [navigation]);
+
+  const renderDrawerItem = useCallback(({ item }: { item: any }) => (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      style={[styles.drawerItem, item.focused && styles.drawerItemActive]}
+      onPress={() => handleNavigation(item.name)}
+    >
+      <View style={[styles.iconContainer, item.focused && styles.iconContainerActive]}>
+        <Ionicons name={item.icon as any} size={22} color={item.focused ? "#fff" : "#666"} />
+      </View>
+      <Text style={[styles.drawerItemText, item.focused && styles.drawerItemTextActive]}>
+        {item.title}
+      </Text>
+      {item.focused && <View style={styles.activeDot} />}
+    </TouchableOpacity>
+  ), [handleNavigation]);
+
+  const keyExtractor = useCallback((item: any) => item.key, []);
+
   return (
     <SafeAreaView style={styles.drawerContainer}>
       <StatusBar backgroundColor="#000" barStyle="light-content" />
 
-      {/* Header yang lebih bergaya */}
+      {/* Header */}
       <View style={styles.drawerHeader}>
         <View style={styles.avatarWrapper}>
-          <Image source={avatarSource} style={styles.drawerAvatar} onError={() => setAvatarError(true)} />
+          <Image
+            source={avatarSource}
+            style={styles.drawerAvatar}
+            onError={() => setAvatarError(true)}
+          />
           <View style={styles.statusIndicator} />
         </View>
         <View style={styles.userInfo}>
           <Text style={styles.welcomeText}>Selamat Datang,</Text>
-          <Text style={styles.username} numberOfLines={1}>{user.username}</Text>
+          <Text style={styles.username} numberOfLines={1}>
+            {user.username || 'Smart TV User'}
+          </Text>
         </View>
       </View>
 
       <FlatList
         data={drawerItems}
-        keyExtractor={item => item.key}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            activeOpacity={0.7}
-            style={[styles.drawerItem, item.focused && styles.drawerItemActive]}
-            onPress={() => {
-              navigation.closeDrawer();
-              navigation.navigate(item.name);
-            }}
-          >
-            <View style={[styles.iconContainer, item.focused && styles.iconContainerActive]}>
-                <Ionicons name={item.icon} size={22} color={item.focused ? "#fff" : "#666"} />
-            </View>
-            <Text style={[styles.drawerItemText, item.focused && styles.drawerItemTextActive]}>
-              {item.title}
-            </Text>
-            {item.focused && <View style={styles.activeDot} />}
-          </TouchableOpacity>
-        )}
+        keyExtractor={keyExtractor}
+        renderItem={renderDrawerItem}
         contentContainerStyle={styles.drawerMenuContent}
+        showsVerticalScrollIndicator={false}
       />
 
       <View style={styles.drawerFooter}>
-        <TouchableOpacity style={styles.exitButton} onPress={handleExitApp}>
-          <Ionicons name="power" size={20} color="#ff6b6b" />
+        <TouchableOpacity
+          style={styles.exitButton}
+          onPress={handleExitApp}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="power-outline" size={20} color="#ff6b6b" />
           <Text style={styles.exitText}>Keluar Aplikasi</Text>
         </TouchableOpacity>
         <Text style={styles.versionText}>v2.0.0 • Chesko TV Player</Text>
@@ -231,6 +289,8 @@ const CustomDrawerContent = React.memo(({ state, navigation, descriptors }: Cust
     </SafeAreaView>
   );
 });
+
+CustomDrawerContent.displayName = 'CustomDrawerContent';
 
 /**
  * Drawer Navigator
@@ -241,40 +301,62 @@ function DrawerNavigator() {
       drawerContent={(props) => <CustomDrawerContent {...props} />}
       screenOptions={{
         headerShown: false,
-        drawerStyle: { backgroundColor: '#000', width: 300 },
+        drawerStyle: {
+          backgroundColor: '#000',
+          width: 300,
+        },
         drawerType: 'slide',
         overlayColor: 'rgba(0,0,0,0.8)',
+        swipeEnabled: true,
       }}
     >
-      <Drawer.Screen 
-        name="Home" 
-        component={HomeTabs} 
-        options={{ title: 'Halaman Utama', drawerIcon: (p) => <Ionicons name="home-outline" {...p} /> }} 
+      <Drawer.Screen
+        name="Home"
+        component={HomeTabs}
+        options={{
+          title: 'Beranda',
+          drawerIcon: (p) => <Ionicons name="home-outline" {...p} />
+        }}
       />
-      <Drawer.Screen 
-        name="PlayerScreen" 
-        component={PlayerScreen} 
-        options={{ drawerItemStyle: { display: 'none' } }} 
+      <Drawer.Screen
+        name="PlayerScreen"
+        component={PlayerScreen}
+        options={{
+          drawerItemStyle: { display: 'none' },
+          swipeEnabled: false,
+        }}
       />
-      <Drawer.Screen 
-        name="FavoriteScreen" 
-        component={FavoriteScreen} 
-        options={{ title: 'Favorit Saya', drawerIcon: (p) => <Ionicons name="heart-outline" {...p} /> }} 
+      <Drawer.Screen
+        name="FavoriteScreen"
+        component={FavoriteScreen}
+        options={{
+          title: 'Favorit Saya',
+          drawerIcon: (p) => <Ionicons name="heart-outline" {...p} />
+        }}
       />
-      <Drawer.Screen 
-        name="SearchScreen" 
-        component={SearchScreen} 
-        options={{ title: 'Cari Channel', drawerIcon: (p) => <Ionicons name="search-outline" {...p} /> }} 
+      <Drawer.Screen
+        name="SearchScreen"
+        component={SearchScreen}
+        options={{
+          title: 'Cari Channel',
+          drawerIcon: (p) => <Ionicons name="search-outline" {...p} />
+        }}
       />
-      <Drawer.Screen 
-        name="EditUrl" 
-        component={EditUrl} 
-        options={{ title: 'Kelola M3U URL', drawerIcon: (p) => <Ionicons name="link-outline" {...p} /> }} 
+      <Drawer.Screen
+        name="EditUrl"
+        component={EditUrl}
+        options={{
+          title: 'Kelola M3U URL',
+          drawerIcon: (p) => <Ionicons name="link-outline" {...p} />
+        }}
       />
-      <Drawer.Screen 
-        name="EditEpg" 
-        component={EditEpg} 
-        options={{ title: 'Kelola EPG', drawerIcon: (p) => <Ionicons name="list-outline" {...p} /> }} 
+      <Drawer.Screen
+        name="EditEpg"
+        component={EditEpg}
+        options={{
+          title: 'Kelola EPG',
+          drawerIcon: (p) => <Ionicons name="list-outline" {...p} />
+        }}
       />
     </Drawer.Navigator>
   );
@@ -300,36 +382,49 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     padding: 3,
   },
-  drawerAvatar: { 
-    width: 60, 
-    height: 60, 
-    borderRadius: 30, 
-    backgroundColor: '#111' 
+  drawerAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#111'
   },
   statusIndicator: {
-    position: 'absolute', 
-    bottom: 2, 
-    right: 2, 
-    width: 14, 
-    height: 14, 
-    borderRadius: 7, 
-    backgroundColor: '#4ade80', 
-    borderWidth: 2, 
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#4ade80',
+    borderWidth: 2,
     borderColor: '#000'
   },
-  userInfo: { marginLeft: 15, flex: 1 },
-  welcomeText: { color: '#666', fontSize: 12, marginBottom: 2 },
-  username: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
-
-  drawerMenuContent: { paddingVertical: 20, paddingHorizontal: 15 },
+  userInfo: {
+    marginLeft: 15,
+    flex: 1
+  },
+  welcomeText: {
+    color: '#666',
+    fontSize: 12,
+    marginBottom: 2
+  },
+  username: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff'
+  },
+  drawerMenuContent: {
+    paddingVertical: 20,
+    paddingHorizontal: 15
+  },
   drawerItem: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    padding: 12, 
-    borderRadius: 15, 
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 15,
     marginVertical: 4,
   },
-  drawerItemActive: { 
+  drawerItemActive: {
     backgroundColor: '#1a1a1a',
   },
   iconContainer: {
@@ -344,33 +439,57 @@ const styles = StyleSheet.create({
   iconContainerActive: {
     backgroundColor: Colors.primary,
   },
-  drawerItemText: { fontSize: 15, color: '#888' },
-  drawerItemTextActive: { color: '#fff', fontWeight: 'bold' },
+  drawerItemText: {
+    fontSize: 15,
+    color: '#888',
+    flex: 1,
+  },
+  drawerItemTextActive: {
+    color: '#fff',
+    fontWeight: 'bold'
+  },
   activeDot: {
-      width: 5,
-      height: 5,
-      borderRadius: 2.5,
-      backgroundColor: Colors.primary,
-      marginLeft: 'auto'
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: Colors.primary,
+    marginLeft: 'auto'
   },
-
-  drawerFooter: { 
-    padding: 20, 
-    borderTopWidth: 1, 
-    borderTopColor: '#1a1a1a' 
+  drawerFooter: {
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#1a1a1a',
+    marginTop: 'auto',
   },
-  exitButton: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    padding: 15, 
-    backgroundColor: 'rgba(255,107,107,0.1)', 
+  exitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 15,
+    backgroundColor: 'rgba(255,107,107,0.1)',
     borderRadius: 12,
-    justifyContent: 'center'
+    justifyContent: 'center',
+    gap: 8,
   },
-  exitText: { color: '#ff6b6b', marginLeft: 10, fontWeight: 'bold' },
-  versionText: { textAlign: 'center', color: '#333', fontSize: 10, marginTop: 15 },
-  loadingFallback: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
-  loadingText: { marginTop: 10, color: '#fff' },
+  exitText: {
+    color: '#ff6b6b',
+    fontWeight: 'bold'
+  },
+  versionText: {
+    textAlign: 'center',
+    color: '#333',
+    fontSize: 10,
+    marginTop: 15
+  },
+  loadingFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000'
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#fff'
+  },
 });
 
 export default function DrawerNavigatorWrapper() {

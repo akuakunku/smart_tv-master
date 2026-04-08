@@ -22,11 +22,13 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [errorImages, setErrorImages] = useState<{ [key: string]: boolean }>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const navigation = useNavigation<any>();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scrollY = useRef(new Animated.Value(0)).current;
+  const slideshowRef = useRef<FlatList>(null);
 
   // Responsive values
   const isTablet = windowWidth >= 768;
@@ -34,7 +36,6 @@ export default function Home() {
   const CARD_WIDTH = isTablet ? windowWidth * 0.28 : windowWidth * 0.42;
   const CARD_HEIGHT = CARD_WIDTH * 0.6;
   const HERO_HEIGHT = isLandscape ? windowHeight * 0.7 : windowHeight * 0.55;
-  const NAV_ICON_SIZE = isTablet ? 60 : 60;
   const SECTION_TITLE_SIZE = isTablet ? 20 : 17;
 
   const [sections, setSections] = useState({
@@ -80,6 +81,13 @@ export default function Home() {
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
+
+  // Handle scroll untuk dot indicator
+  const handleSlideScroll = (event: any) => {
+    const slideWidth = event.nativeEvent.layoutMeasurement.width;
+    const index = Math.round(event.nativeEvent.contentOffset.x / slideWidth);
+    setCurrentSlideIndex(index);
+  };
 
   const renderFeaturedSlide = ({ item }: any) => (
     <View style={[styles.heroSlide, { width: windowWidth, height: HERO_HEIGHT }]}>
@@ -145,6 +153,35 @@ export default function Home() {
     </TouchableOpacity>
   );
 
+  // Render dot indicator
+  const renderDotIndicator = () => {
+    if (sections.slideshow.length <= 1) return null;
+    
+    return (
+      <View style={styles.dotContainer}>
+        {sections.slideshow.map((_, index) => (
+          <TouchableOpacity
+            key={index}
+            style={[
+              styles.dot,
+              currentSlideIndex === index && styles.activeDot,
+              isTablet && styles.tabletDot
+            ]}
+            onPress={() => {
+              if (slideshowRef.current) {
+                const slideWidth = windowWidth;
+                slideshowRef.current.scrollToOffset({
+                  offset: slideWidth * index,
+                  animated: true
+                });
+              }
+            }}
+          />
+        ))}
+      </View>
+    );
+  };
+
   if (isLoading) {
     return (
       <View style={styles.loadingScreen}>
@@ -181,14 +218,21 @@ export default function Home() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
       >
-        <FlatList
-          data={sections.slideshow}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          renderItem={renderFeaturedSlide}
-          keyExtractor={(_, i) => `hero-${i}`}
-        />
+        {/* Slideshow Section with Dot Indicator */}
+        <View>
+          <FlatList
+            ref={slideshowRef}
+            data={sections.slideshow}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            renderItem={renderFeaturedSlide}
+            keyExtractor={(_, i) => `hero-${i}`}
+            onScroll={handleSlideScroll}
+            scrollEventThrottle={16}
+          />
+          {renderDotIndicator()}
+        </View>
 
         <View style={[styles.modernNav, isTablet && styles.tabletModernNav]}>
           <NavAction 
@@ -254,7 +298,7 @@ export default function Home() {
   );
 }
 
-// Updated NavAction with responsive props
+// NavAction component
 const NavAction = ({ title, icon, color, onPress, isTablet }: any) => (
   <TouchableOpacity style={[styles.qaItem, isTablet && styles.tabletQaItem]} onPress={onPress}>
     <View style={[styles.qaIconBg, isTablet && styles.tabletQaIconBg, { backgroundColor: color + '25' }]}>
@@ -264,7 +308,7 @@ const NavAction = ({ title, icon, color, onPress, isTablet }: any) => (
   </TouchableOpacity>
 );
 
-// Updated Section with responsive props
+// Section component
 const Section = ({ title, data, renderItem, onSeeAll, isTablet, sectionTitleSize }: any) => (
   data.length > 0 ? (
     <View style={[styles.sectionWrap, isTablet && styles.tabletSectionWrap]}>
@@ -565,5 +609,33 @@ const styles = StyleSheet.create({
   tabletLoadingBrand: {
     fontSize: 34,
     letterSpacing: 8,
-  }
+  },
+  // Dot Indicator Styles
+  dotContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'absolute',
+    bottom: 20,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+    marginHorizontal: 4,
+  },
+  activeDot: {
+    width: 24,
+    backgroundColor: Colors.primary,
+  },
+  tabletDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginHorizontal: 6,
+  },
 });

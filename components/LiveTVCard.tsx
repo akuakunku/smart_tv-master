@@ -32,12 +32,11 @@ export interface ChannelProps {
 
 const { width: screenWidth } = Dimensions.get('window');
 
-// Responsive card widths based on screen size
 const getCardWidth = () => {
   if (screenWidth >= 768) {
-    return (screenWidth - 64) / 4; // Tablet: 4 columns
+    return (screenWidth - 64) / 4;
   }
-  return (screenWidth - 48) / 3; // Phone: 3 columns
+  return (screenWidth - 48) / 3; 
 };
 
 const CARD_WIDTH = getCardWidth();
@@ -47,7 +46,7 @@ const truncateName = (name: string, limit: number) => {
   return name.length > limit ? `${name.substring(0, limit)}...` : name;
 };
 
-const LiveTVCard: React.FC<ChannelProps> = memo((({ 
+const LiveTVCard: React.FC<ChannelProps> = memo(({ 
   channel, 
   onPress, 
   isActive = false, 
@@ -63,11 +62,13 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
 
-  const hasValidLogo = channel?.logo && 
-                      channel.logo.trim() !== '' && 
-                      (channel.logo.startsWith('http://') || channel.logo.startsWith('https://'));
+  // PERBAIKAN: Validasi logo yang lebih baik
+  const hasValidLogo = useCallback(() => {
+    return channel?.logo && 
+           channel.logo.trim() !== '' && 
+           (channel.logo.startsWith('http://') || channel.logo.startsWith('https://'));
+  }, [channel?.logo]);
 
-  // Image size styles
   const getImageContainerSize = () => {
     switch (imageSize) {
       case 'small': return { width: "70%", aspectRatio: 1 };
@@ -96,12 +97,12 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
     Animated.sequence([
       Animated.timing(scaleAnim, {
         toValue: 0.95,
-        duration: 100,
+        duration: 80,
         useNativeDriver: true,
       }),
       Animated.timing(scaleAnim, {
         toValue: 1,
-        duration: 100,
+        duration: 80,
         useNativeDriver: true,
       }),
     ]).start();
@@ -125,12 +126,11 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
     if (!mountedRef.current) return;
     clearTimeouts();
     setImageStatus('error');
-    
-    // Only show default image after error
     setShouldShowDefault(true);
     startFadeIn();
   }, [clearTimeouts, startFadeIn]);
 
+  // PERBAIKAN: Load start yang lebih aman
   const handleLoadStart = useCallback(() => {
     if (!mountedRef.current) return;
     clearTimeouts();
@@ -138,14 +138,12 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
     setShouldShowDefault(false);
     fadeAnim.setValue(0);
     
-    // Set timeout for slow loading (longer for retries)
-    const timeoutDuration = retryCount > 0 ? 15000 : 10000;
+    const timeoutDuration = 10000;
     timeoutRef.current = setTimeout(() => {
       if (mountedRef.current && imageStatus === 'loading') {
         if (retryCount < 2) {
-          // Retry loading
           setRetryCount(prev => prev + 1);
-          setImageStatus('loading');
+          // Retry dengan memicu load start lagi
           handleLoadStart();
         } else {
           setImageStatus('error');
@@ -154,26 +152,29 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
         }
       }
     }, timeoutDuration);
-  }, [clearTimeouts, fadeAnim, imageStatus, retryCount, startFadeIn]);
+  }, [clearTimeouts, fadeAnim, imageStatus, retryCount, startFadeIn, handleLoadStart]);
 
   const handleRetry = useCallback(() => {
+    if (!mountedRef.current) return;
     setImageStatus('loading');
     setShouldShowDefault(false);
     setRetryCount(0);
-    handleLoadStart();
-  }, [handleLoadStart]);
+    clearTimeouts();
+    startFadeIn();
+  }, [clearTimeouts, startFadeIn]);
 
-  // Reset state when channel changes
+  // PERBAIKAN: Effect untuk reset state saat channel berubah
   useEffect(() => {
     mountedRef.current = true;
+    const validLogo = hasValidLogo();
+    
     setImageStatus('loading');
-    setShouldShowDefault(!hasValidLogo);
+    setShouldShowDefault(!validLogo);
     setRetryCount(0);
     fadeAnim.setValue(0);
     clearTimeouts();
     
-    // If no valid logo, immediately show default
-    if (!hasValidLogo) {
+    if (!validLogo) {
       setImageStatus('error');
       startFadeIn();
     }
@@ -184,9 +185,8 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
     };
   }, [channel?.url, channel?.logo, hasValidLogo, clearTimeouts, fadeAnim, startFadeIn]);
 
-  // Determine which image to show
-  const showDefaultImage = shouldShowDefault || !hasValidLogo || imageStatus === 'error';
-  const showChannelImage = hasValidLogo && !showDefaultImage && imageStatus !== 'error';
+  const showDefaultImage = shouldShowDefault || !hasValidLogo() || imageStatus === 'error';
+  const showChannelImage = hasValidLogo() && !showDefaultImage && imageStatus !== 'error';
   const showLoading = imageStatus === 'loading' && showChannelImage && !showDefaultImage;
 
   const imageContainerSize = getImageContainerSize();
@@ -217,13 +217,12 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
               <ActivityIndicator size="small" color="#edec25" />
               {retryCount > 0 && (
                 <Text style={styles.retryCountText}>
-                  Retry {retryCount}/2
+                  Memuat {retryCount}/2
                 </Text>
               )}
             </View>
           )}
           
-          {/* Channel Image */}
           {showChannelImage && (
             <Animated.View style={[styles.imageWrapper, { opacity: fadeAnim }]}>
               <Image
@@ -239,7 +238,6 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
             </Animated.View>
           )}
           
-          {/* Default Image - only shown when needed, no blinking */}
           {showDefaultImage && (
             <Animated.View style={[styles.imageWrapper, { opacity: fadeAnim }]}>
               <Image
@@ -251,22 +249,20 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
             </Animated.View>
           )}
           
-          {/* Play button overlay on active channel */}
           {isActive && (
             <View style={styles.playOverlay}>
-              <Ionicons name="play-circle" size={30} color="#edec25" />
+              <Ionicons name="play-circle" size={32} color="#edec25" />
             </View>
           )}
           
-          {/* Retry button when image fails and has valid logo */}
-          {imageStatus === 'error' && hasValidLogo && !showDefaultImage && (
+          {imageStatus === 'error' && hasValidLogo() && !showDefaultImage && (
             <TouchableOpacity 
               style={styles.retryOverlay} 
               onPress={handleRetry}
               activeOpacity={0.8}
             >
               <Ionicons name="refresh-outline" size={24} color="#edec25" />
-              <Text style={styles.retryText}>Retry</Text>
+              <Text style={styles.retryText}>Coba Lagi</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -275,31 +271,23 @@ const LiveTVCard: React.FC<ChannelProps> = memo((({
           <Text style={[styles.text, isActive && styles.activeText]} numberOfLines={2}>
             {truncateName(channel.name, 25)}
           </Text>
-          {showGroup && channel.group && channel.group !== "Unknown" && (
+          {showGroup && channel.group && channel.group !== "Unknown" && channel.group !== "Lainnya" && (
             <Text style={styles.groupText} numberOfLines={1}>
               {channel.group.length > 20 ? `${channel.group.substring(0, 20)}...` : channel.group}
             </Text>
           )}
         </View>
         
-        {/* Live indicator */}
         {showLiveIndicator && isActive && (
           <View style={styles.liveBadge}>
             <View style={styles.liveDot} />
             <Text style={styles.liveText}>LIVE</Text>
           </View>
         )}
-        
-        {/* Quality indicator (optional - could be added based on video quality) */}
-        {isActive && (
-          <View style={styles.qualityBadge}>
-            <Ionicons name="tv-outline" size={10} color="#edec25" />
-          </View>
-        )}
       </TouchableOpacity>
     </Animated.View>
   );
-}));
+});
 
 LiveTVCard.displayName = 'LiveTVCard';
 
@@ -311,7 +299,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 10,
     margin: 6,
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: "#444",
     alignSelf: "flex-start",
     gap: 8,
@@ -326,11 +314,10 @@ const styles = StyleSheet.create({
   },
   activeCard: {
     borderColor: "#edec25",
-    backgroundColor: "#333",
+    backgroundColor: "#1a1a2e",
     shadowColor: "#edec25",
     shadowOpacity: 0.3,
     elevation: 8,
-    transform: [{ scale: 1.02 }],
   },
   imageContainer: {
     justifyContent: "center",
@@ -342,7 +329,7 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   activeImageContainer: {
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: "#edec25",
   },
   imageWrapper: {
@@ -449,16 +436,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 8,
     fontWeight: 'bold',
-  },
-  qualityBadge: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 4,
-    zIndex: 5,
   },
 });
 

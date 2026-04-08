@@ -39,10 +39,17 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return shuffledArray;
 };
 
+// PERBAIKAN: ChannelLogo component dengan error handling yang lebih baik
 const ChannelLogo = React.memo(({ logo, channelName, size = 80 }: { logo: string | null, channelName: string, size?: number }) => {
   const [hasError, setHasError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const defaultImage = require("../assets/images/maskable.png");
+
+  // PERBAIKAN: Reset error state when logo changes
+  useEffect(() => {
+    setHasError(false);
+    setIsLoading(true);
+  }, [logo]);
 
   const handleLoad = useCallback(() => {
     setIsLoading(false);
@@ -55,13 +62,16 @@ const ChannelLogo = React.memo(({ logo, channelName, size = 80 }: { logo: string
 
   const source = useMemo(() => {
     if (hasError || !logo) return defaultImage;
-    return { uri: logo };
+    if (logo.startsWith('http://') || logo.startsWith('https://')) {
+      return { uri: logo };
+    }
+    return defaultImage;
   }, [logo, hasError]);
 
   return (
     <View style={[styles.logoWrapper, { width: size, height: size, borderRadius: size / 2 }]}>
       {isLoading && (
-        <View style={styles.logoLoading}>
+        <View style={[styles.logoLoading, { borderRadius: size / 2 }]}>
           <ActivityIndicator size="small" color="#edec25" />
         </View>
       )}
@@ -78,18 +88,17 @@ const ChannelLogo = React.memo(({ logo, channelName, size = 80 }: { logo: string
   );
 });
 
+// PERBAIKAN: ChannelItem component dengan memo yang tepat
 const ChannelItem = React.memo(({ 
   item, 
   cardWidth, 
   currentChannelUrl,
   onPress,
-  index
 }: { 
   item: Channel;
   cardWidth: number;
   currentChannelUrl: string;
   onPress: (url: string) => void;
-  index: number;
 }) => {
   const isActive = item.url === currentChannelUrl;
   
@@ -119,15 +128,15 @@ const ChannelItem = React.memo(({
             )}
           </View>
           <Text style={[styles.channelName, isActive && styles.activeText]} numberOfLines={2}>
-            {item.name}
+            {item.name || "Unknown Channel"}
           </Text>
           <Text style={styles.groupName} numberOfLines={1}>
-            {item.group || 'TV Channel'}
+            {item.group && item.group !== "Lainnya" && item.group !== "Unknown" ? item.group : 'TV Channel'}
           </Text>
           {isActive && (
             <View style={styles.nowPlayingBadge}>
               <View style={styles.liveDot} />
-              <Text style={styles.nowPlayingText}>NOW PLAYING</Text>
+              <Text style={styles.nowPlayingText}>LIVE</Text>
             </View>
           )}
         </BlurView>
@@ -147,8 +156,10 @@ const ChannelList: React.FC<ChannelListProps> = ({
   const navigation = useNavigation();
   const [recommendedChannels, setRecommendedChannels] = useState<Channel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const previousGroupRef = useRef<string>('');
+  const isMountedRef = useRef(true);
 
   // Calculate responsive card width
   const cardWidth = useMemo(() => {
@@ -165,45 +176,57 @@ const ChannelList: React.FC<ChannelListProps> = ({
   }, [channels, currentChannelUrl]);
 
   // Generate recommendations based on current channel group
-  useEffect(() => {
+  const generateRecommendations = useCallback(() => {
+    if (!isMountedRef.current) return;
+    
     setIsLoading(true);
+    
+    if (currentChannelGroup) {
+      const filteredChannels = channels.filter(
+        channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
+      );
+      
+      // Don't shuffle if group hasn't changed to maintain consistency
+      let shuffledChannels;
+      if (previousGroupRef.current === currentChannelGroup) {
+        // Keep existing order if same group
+        shuffledChannels = filteredChannels.slice(0, maxRecommendations);
+      } else {
+        shuffledChannels = shuffleArray(filteredChannels).slice(0, maxRecommendations);
+        previousGroupRef.current = currentChannelGroup;
+      }
+      
+      setRecommendedChannels(shuffledChannels);
+    } else {
+      // If no group, show random channels from different groups
+      const otherChannels = channels.filter(channel => channel.url !== currentChannelUrl);
+      const shuffledChannels = shuffleArray(otherChannels).slice(0, maxRecommendations);
+      setRecommendedChannels(shuffledChannels);
+    }
+    setIsLoading(false);
+  }, [channels, currentChannelUrl, currentChannelGroup, maxRecommendations]);
+
+  // Generate recommendations when dependencies change
+  useEffect(() => {
+    isMountedRef.current = true;
     
     // Small delay to prevent flickering
     const timer = setTimeout(() => {
-      if (currentChannelGroup) {
-        const filteredChannels = channels.filter(
-          channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
-        );
-        
-        // Don't shuffle if group hasn't changed to maintain consistency
-        let shuffledChannels;
-        if (previousGroupRef.current === currentChannelGroup) {
-          // Keep existing order if same group
-          shuffledChannels = filteredChannels.slice(0, maxRecommendations);
-        } else {
-          shuffledChannels = shuffleArray(filteredChannels).slice(0, maxRecommendations);
-          previousGroupRef.current = currentChannelGroup;
-        }
-        
-        setRecommendedChannels(shuffledChannels);
-      } else {
-        // If no group, show random channels from different groups
-        const otherChannels = channels.filter(channel => channel.url !== currentChannelUrl);
-        const shuffledChannels = shuffleArray(otherChannels).slice(0, maxRecommendations);
-        setRecommendedChannels(shuffledChannels);
-      }
-      setIsLoading(false);
+      generateRecommendations();
     }, 100);
 
-    return () => clearTimeout(timer);
-  }, [currentChannelUrl, channels, currentChannelGroup, maxRecommendations]);
+    return () => {
+      isMountedRef.current = false;
+      clearTimeout(timer);
+    };
+  }, [generateRecommendations]);
 
   // Scroll to top when recommendations change
   useEffect(() => {
-    if (flatListRef.current && recommendedChannels.length > 0) {
-      flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+    if (flatListRef.current && recommendedChannels.length > 0 && !isLoading) {
+      flatListRef.current.scrollToOffset({ offset: 0, animated: false });
     }
-  }, [currentChannelUrl]);
+  }, [currentChannelUrl, recommendedChannels.length, isLoading]);
 
   const handleChannelChange = useCallback((channelUrl: string) => {
     const selectedChannel = channels.find(c => c.url === channelUrl);
@@ -216,47 +239,68 @@ const ChannelList: React.FC<ChannelListProps> = ({
     }
   }, [channels, onChannelSelect, navigation]);
 
-  const renderItem = useCallback(({ item, index }: { item: Channel; index: number }) => (
+  const handleRefresh = useCallback(() => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    
+    // Regenerate recommendations with shuffle
+    if (currentChannelGroup) {
+      const filteredChannels = channels.filter(
+        channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
+      );
+      const shuffledChannels = shuffleArray(filteredChannels).slice(0, maxRecommendations);
+      setRecommendedChannels(shuffledChannels);
+    } else {
+      const otherChannels = channels.filter(channel => channel.url !== currentChannelUrl);
+      const shuffledChannels = shuffleArray(otherChannels).slice(0, maxRecommendations);
+      setRecommendedChannels(shuffledChannels);
+    }
+    
+    setTimeout(() => {
+      setIsRefreshing(false);
+    }, 500);
+  }, [channels, currentChannelGroup, currentChannelUrl, maxRecommendations, isRefreshing]);
+
+  const renderItem = useCallback(({ item }: { item: Channel }) => (
     <ChannelItem
       item={item}
       cardWidth={cardWidth}
       currentChannelUrl={currentChannelUrl}
       onPress={handleChannelChange}
-      index={index}
     />
   ), [cardWidth, currentChannelUrl, handleChannelChange]);
 
-  const keyExtractor = useCallback((item: Channel) => `${item.url}-${item.name}`, []);
+  const keyExtractor = useCallback((item: Channel, index: number) => `${item.url}-${index}`, []);
 
   const getSectionTitle = useMemo(() => {
-    if (currentChannelGroup && currentChannelGroup !== "Unknown") {
+    if (currentChannelGroup && currentChannelGroup !== "Lainnya" && currentChannelGroup !== "Unknown") {
       return `More from ${currentChannelGroup}`;
     }
     return "Recommended for You";
   }, [currentChannelGroup]);
 
   const getChannelCount = useMemo(() => {
-    if (currentChannelGroup) {
+    if (currentChannelGroup && currentChannelGroup !== "Lainnya" && currentChannelGroup !== "Unknown") {
       const totalInGroup = channels.filter(ch => ch.group === currentChannelGroup).length;
       return `${recommendedChannels.length} of ${totalInGroup - 1} channels`;
     }
     return `${recommendedChannels.length} recommendations`;
   }, [channels, currentChannelGroup, recommendedChannels.length]);
 
-  if (isLoading) {
+  if (isLoading && recommendedChannels.length === 0) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="small" color="#edec25" />
-        <Text style={styles.loadingText}>Loading recommendations...</Text>
+        <Text style={styles.loadingText}>Memuat rekomendasi...</Text>
       </View>
     );
   }
 
-  if (recommendedChannels.length === 0) {
+  if (recommendedChannels.length === 0 && !isLoading) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>No other channels available</Text>
-        <Text style={styles.emptySubText}>Try refreshing the channel list</Text>
+        <Text style={styles.emptyText}>Tidak ada channel lain</Text>
+        <Text style={styles.emptySubText}>Coba refresh daftar channel</Text>
       </View>
     );
   }
@@ -270,18 +314,15 @@ const ChannelList: React.FC<ChannelListProps> = ({
             <Text style={styles.channelCount}>{getChannelCount}</Text>
           </View>
           <TouchableOpacity 
-            style={styles.refreshButton}
-            onPress={() => {
-              if (currentChannelGroup) {
-                const filteredChannels = channels.filter(
-                  channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
-                );
-                const shuffledChannels = shuffleArray(filteredChannels).slice(0, maxRecommendations);
-                setRecommendedChannels(shuffledChannels);
-              }
-            }}
+            style={[styles.refreshButton, isRefreshing && styles.refreshButtonDisabled]}
+            onPress={handleRefresh}
+            disabled={isRefreshing}
           >
-            <Text style={styles.refreshText}>Refresh</Text>
+            {isRefreshing ? (
+              <ActivityIndicator size="small" color="#edec25" />
+            ) : (
+              <Text style={styles.refreshText}>Refresh</Text>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -296,11 +337,13 @@ const ChannelList: React.FC<ChannelListProps> = ({
         contentContainerStyle={styles.contentContainer}
         snapToAlignment="start"
         decelerationRate="fast"
-        snapToInterval={cardWidth + 16}
         initialNumToRender={4}
         maxToRenderPerBatch={6}
         windowSize={10}
         removeClippedSubviews={Platform.OS === 'android'}
+        maintainVisibleContentPosition={{
+          minIndexForVisible: 0,
+        }}
       />
     </View>
   );
@@ -337,6 +380,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(237, 236, 37, 0.3)',
+  },
+  refreshButtonDisabled: {
+    opacity: 0.5,
   },
   refreshText: {
     color: '#edec25',
@@ -401,7 +447,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#1e1e1e',
-    borderRadius: 40,
     zIndex: 1,
   },
   channelLogo: { 

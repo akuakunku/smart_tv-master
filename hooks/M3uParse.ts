@@ -29,7 +29,7 @@ const DEFAULT_M3U_URLS = [
 const CACHE_KEY = "m3u_channels_cache";
 const USER_M3U_URLS_KEY = "user_m3u_urls";
 const ACTIVE_URL_KEY = "active_m3u_url";
-const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 jam
+const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 const useM3uParse = () => {
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -41,6 +41,7 @@ const useM3uParse = () => {
 
   const fetchInProgressRef = useRef<boolean>(false);
   const cancelTokenRef = useRef<CancelTokenSource | null>(null);
+  const isMountedRef = useRef<boolean>(true);
 
   // --- Validasi URL ---
   const isValidUrl = useCallback((url: string): boolean => {
@@ -177,11 +178,15 @@ const useM3uParse = () => {
       const stored = await AsyncStorage.getItem(USER_M3U_URLS_KEY);
       if (stored) {
         const urls = JSON.parse(stored);
-        setUserUrls(Array.isArray(urls) ? urls : []);
+        if (isMountedRef.current) {
+          setUserUrls(Array.isArray(urls) ? urls : []);
+        }
       }
     } catch (e) {
       console.error("Load URLs error", e);
-      setUserUrls([]);
+      if (isMountedRef.current) {
+        setUserUrls([]);
+      }
     }
   }, []);
 
@@ -197,7 +202,9 @@ const useM3uParse = () => {
       if (!list.includes(newUrl)) {
         const newList = [...list, newUrl];
         await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
-        setUserUrls(newList);
+        if (isMountedRef.current) {
+          setUserUrls(newList);
+        }
         return true;
       }
       return false;
@@ -212,7 +219,9 @@ const useM3uParse = () => {
     try {
       const newList = userUrls.filter(u => u !== urlToDelete);
       await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
-      setUserUrls(newList);
+      if (isMountedRef.current) {
+        setUserUrls(newList);
+      }
 
       // Jika URL yang dihapus adalah active URL, pindah ke default
       const activeUrl = await AsyncStorage.getItem(ACTIVE_URL_KEY);
@@ -231,6 +240,7 @@ const useM3uParse = () => {
     // Cancel previous request if exists
     if (cancelTokenRef.current) {
       cancelTokenRef.current.cancel("Request dibatalkan karena request baru");
+      cancelTokenRef.current = null;
     }
 
     if (fetchInProgressRef.current) return;
@@ -270,9 +280,11 @@ const useM3uParse = () => {
       if (parsedChannels.length > 0) {
         const uniqueGroups = Array.from(new Set(parsedChannels.map(ch => ch.group || "Lainnya"))).sort();
 
-        setChannels(parsedChannels);
-        setGroups(uniqueGroups);
-        setError(null);
+        if (isMountedRef.current) {
+          setChannels(parsedChannels);
+          setGroups(uniqueGroups);
+          setError(null);
+        }
 
         // Simpan Cache
         await saveCache(parsedChannels, uniqueGroups);
@@ -291,17 +303,23 @@ const useM3uParse = () => {
       // Try to load from cache
       const cached = await loadCache();
       if (cached && cached.channels.length > 0) {
-        setChannels(cached.channels);
-        setGroups(cached.groups);
-        setError("Gagal memuat URL terbaru. Menampilkan data cache.");
+        if (isMountedRef.current) {
+          setChannels(cached.channels);
+          setGroups(cached.groups);
+          setError("Gagal memuat URL terbaru. Menampilkan data cache.");
+        }
       } else {
-        setError(err.message || "Gagal memuat M3U. Periksa koneksi internet Anda.");
-        setChannels([]);
-        setGroups([]);
+        if (isMountedRef.current) {
+          setError(err.message || "Gagal memuat M3U. Periksa koneksi internet Anda.");
+          setChannels([]);
+          setGroups([]);
+        }
       }
     } finally {
-      setLoading(false);
-      setIsFetching(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setIsFetching(false);
+      }
       fetchInProgressRef.current = false;
       cancelTokenRef.current = null;
     }
@@ -313,10 +331,13 @@ const useM3uParse = () => {
       return false;
     }
 
-    setLoading(true);
-    // Kosongkan channels agar UI utama tahu ada transisi playlist
-    setChannels([]);
-    setGroups([]);
+    // Reset state sebelum fetch
+    if (isMountedRef.current) {
+      setLoading(true);
+      setChannels([]);
+      setGroups([]);
+      setError(null);
+    }
 
     try {
       await AsyncStorage.setItem(ACTIVE_URL_KEY, url);
@@ -324,11 +345,13 @@ const useM3uParse = () => {
       await fetchM3u(url);
       return true;
     } catch (e) {
-      setError("Gagal berpindah playlist");
+      console.error("Change active URL error:", e);
+      if (isMountedRef.current) {
+        setError("Gagal berpindah playlist");
+      }
       return false;
-    } finally {
-      setLoading(false);
     }
+    // PERBAIKAN: Hapus setLoading(false) di sini karena sudah di handle di fetchM3u
   }, [fetchM3u, isValidUrl]);
 
   const refetch = useCallback(() => fetchM3u(), [fetchM3u]);
@@ -360,18 +383,37 @@ const useM3uParse = () => {
     return channels.filter(c => c.group === group);
   }, [channels]);
 
+  // Get channel by URL
+  const getChannelByUrl = useCallback((url: string) => {
+    return channels.find(c => c.url === url);
+  }, [channels]);
+
+  // Get total channels count
+  const getTotalChannels = useCallback(() => {
+    return channels.length;
+  }, [channels]);
+
+  // Get groups count
+  const getGroupsCount = useCallback(() => {
+    return groups.length;
+  }, [groups]);
+
   // Initial Load
   useEffect(() => {
+    isMountedRef.current = true;
+    
     loadUserUrls();
     fetchM3u();
 
     // Cleanup on unmount
     return () => {
+      isMountedRef.current = false;
       if (cancelTokenRef.current) {
         cancelTokenRef.current.cancel("Component unmounted");
+        cancelTokenRef.current = null;
       }
     };
-  }, []);
+  }, []); 
 
   return {
     channels,
@@ -388,7 +430,10 @@ const useM3uParse = () => {
     clearCache,
     searchChannels,
     getChannelsByGroup,
-    isValidUrl: isValidUrl,
+    getChannelByUrl,
+    getTotalChannels,
+    getGroupsCount,
+    isValidUrl,
   };
 };
 

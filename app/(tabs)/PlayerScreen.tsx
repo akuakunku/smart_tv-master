@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Platform,
-  Dimensions,
   useWindowDimensions,
 } from "react-native";
 import { useNavigation, useFocusEffect, useRoute } from "@react-navigation/native";
@@ -30,7 +29,7 @@ const PlayerScreen = () => {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
 
   const { url } = route.params || {};
   const { toggleFavorite, isFavorite } = useFavorites();
@@ -48,11 +47,8 @@ const PlayerScreen = () => {
 
   const channelName = selectedChannel?.name || "Unknown Channel";
 
-  // Responsive values
   const isTablet = windowWidth >= 768;
-  const isLandscape = windowWidth > windowHeight;
 
-  // Orientation Management
   const manageOrientation = useCallback(async () => {
     if (isFullscreen) {
       await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_LEFT);
@@ -63,7 +59,6 @@ const PlayerScreen = () => {
     }
   }, [isFullscreen]);
 
-  // UI Configuration
   const configureUI = useCallback(() => {
     navigation.setOptions({
       headerShown: false,
@@ -83,7 +78,6 @@ const PlayerScreen = () => {
     };
   }, [isFullscreen, configureUI, manageOrientation]);
 
-  // Back Button Handler
   useFocusEffect(
     useCallback(() => {
       const onBackPress = () => {
@@ -98,7 +92,6 @@ const PlayerScreen = () => {
     }, [isFullscreen])
   );
 
-  // Channel Actions
   const handleChannelChange = useCallback((newUrl: string) => {
     if (newUrl === url) return;
     setVideoKey(v => v + 1);
@@ -129,17 +122,31 @@ const PlayerScreen = () => {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color={Colors.primary} />
+        <Text style={styles.loadingText}>Memuat daftar channel...</Text>
       </View>
     );
   }
 
-  // Responsive body padding
+  if (!selectedChannel && !channelsLoading) {
+    return (
+      <View style={styles.centerContainer}>
+        <MaterialCommunityIcons name="television-off" size={64} color="#444" />
+        <Text style={styles.errorText}>Channel tidak ditemukan</Text>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => navigation.goBack()}
+        >
+          <Text style={styles.backButtonText}>Kembali</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   const bodyPadding = isTablet ? 32 : 20;
   const cardPadding = isTablet ? 24 : 18;
   const titleFontSize = isTablet ? 24 : 20;
 
   return (
-    
     <View style={[styles.root, isFullscreen && styles.rootFullscreen]}>
       {!isFullscreen && (
         <View style={[styles.statusBarSpacer, { height: insets.top }]}>
@@ -157,9 +164,9 @@ const PlayerScreen = () => {
         ]}
         refreshControl={
           !isFullscreen ? (
-            <RefreshControl 
-              refreshing={isRefreshing} 
-              onRefresh={handleRefresh} 
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handleRefresh}
               tintColor={Colors.primary}
               colors={[Colors.primary]}
               progressBackgroundColor="#111"
@@ -167,6 +174,7 @@ const PlayerScreen = () => {
           ) : undefined
         }
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={isFullscreen ? styles.playerFullscreen : styles.playerPortrait}>
           <VideoPlayer
@@ -200,24 +208,12 @@ const PlayerScreen = () => {
               <EPGInfo tvgId={selectedChannel?.tvgId} channelName={channelName} />
             </Section>
 
-            <Section
-              icon="format-list-bulleted"
-              title="Saluran Lain"
-              rightElement={
-                <View style={styles.totalContainer}>
-                  <Text style={[styles.countText, isTablet && styles.tabletCountText]}>
-                    {channels.length} Total
-                  </Text>
-                </View>
-              }
-              isTablet={isTablet}
-            >
-              <ChannelList
-                channels={channels}
-                currentChannelUrl={url}
-                onChannelSelect={handleChannelChange}
-              />
-            </Section>
+
+            <ChannelList
+              channels={channels}
+              currentChannelUrl={url}
+              onChannelSelect={handleChannelChange}
+            />
           </View>
         )}
       </ScrollView>
@@ -234,7 +230,6 @@ const PlayerScreen = () => {
   );
 };
 
-// Optimized ChannelInfoCard
 interface ChannelInfoCardProps {
   channelName: string;
   group?: string;
@@ -282,8 +277,8 @@ const ChannelInfoCard: React.FC<ChannelInfoCardProps> = React.memo(({
       </View>
     </View>
 
-    <TouchableOpacity 
-      onPress={onToggleFavorite} 
+    <TouchableOpacity
+      onPress={onToggleFavorite}
       style={[styles.favBtn, isTablet && styles.tabletFavBtn]}
       activeOpacity={0.7}
     >
@@ -296,7 +291,6 @@ const ChannelInfoCard: React.FC<ChannelInfoCardProps> = React.memo(({
   </View>
 ));
 
-// Optimized Section
 interface SectionProps {
   icon: string;
   title: string;
@@ -305,20 +299,20 @@ interface SectionProps {
   isTablet?: boolean;
 }
 
-const Section: React.FC<SectionProps> = React.memo(({ 
-  icon, 
-  title, 
-  rightElement, 
-  children, 
-  isTablet 
+const Section: React.FC<SectionProps> = React.memo(({
+  icon,
+  title,
+  rightElement,
+  children,
+  isTablet
 }) => (
   <View style={[styles.section, isTablet && styles.tabletSection]}>
     <View style={[styles.sectionHeader, isTablet && styles.tabletSectionHeader]}>
       <View style={[styles.iconBox, isTablet && styles.tabletIconBox]}>
-        <MaterialCommunityIcons 
-          name={icon as any} 
-          size={isTablet ? 22 : 18} 
-          color={Colors.primary} 
+        <MaterialCommunityIcons
+          name={icon as any}
+          size={isTablet ? 22 : 18}
+          color={Colors.primary}
         />
       </View>
       <Text style={[styles.sectionTitle, isTablet && styles.tabletSectionTitle]}>
@@ -358,6 +352,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#000',
+    padding: 20,
+  },
+  loadingText: {
+    color: '#888',
+    marginTop: 12,
+    fontSize: 14,
+  },
+  errorText: {
+    color: '#888',
+    marginTop: 12,
+    fontSize: 14,
+    marginBottom: 20,
+  },
+  backButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  backButtonText: {
+    color: '#000',
+    fontWeight: 'bold',
   },
   playerPortrait: {
     aspectRatio: 16 / 9,
@@ -372,8 +388,6 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
   },
-
-  // Info Card Styles
   infoCard: {
     flexDirection: 'row',
     backgroundColor: '#111',
@@ -460,8 +474,6 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 20,
   },
-
-  // Section Styles
   section: {
     marginBottom: 30,
   },

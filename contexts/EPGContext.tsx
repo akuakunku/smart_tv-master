@@ -36,8 +36,7 @@ export const EPGProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (stored) {
         const parsed: EpgUrl[] = JSON.parse(stored);
-        // Pastikan default sources selalu ada namun tetap menghormati status active dari user
-        const userUrls = parsed.filter(u => !u.isDefault);
+         const userUrls = parsed.filter(u => !u.isDefault);
         const systemUrls = DEFAULT_SOURCES.map(url => {
           const existing = parsed.find(p => p.url === url && p.isDefault);
           return existing ? existing : { url, active: true, isDefault: true };
@@ -77,7 +76,6 @@ export const EPGProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshEPG = async () => {
     setLoading(true);
     try {
-      // Membersihkan cache lama
       await AsyncStorage.removeItem('lastUpdated');
       await AsyncStorage.removeItem('epgData_main');
       await new Promise(resolve => setTimeout(resolve, 800));
@@ -95,7 +93,6 @@ export const EPGProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
 export const useEPG = () => {
   const context = useContext(EPGContext);
-  // Jika ini melempar error, berarti Provider memang tidak ditemukan di atas komponen yang memanggilnya
   if (context === undefined) {
     throw new Error("useEPG must be used within EPGProvider");
   }

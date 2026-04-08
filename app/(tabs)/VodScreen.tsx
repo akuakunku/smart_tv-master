@@ -20,6 +20,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Colors from "../../constants/Colors";
 import useM3uParse from "../../hooks/M3uParse";
 import tvBanner from "../../assets/images/tv_banner.png";
+import moviePlaceholder from "../../assets/images/movie_placeholder.png"; // Buat placeholder image
 import Toast from 'react-native-toast-message';
 import Icon from 'react-native-vector-icons/Ionicons';
 
@@ -56,6 +57,7 @@ const VodScreen = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [vodData, setVodData] = useState<Channel[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [errorImages, setErrorImages] = useState<{ [key: string]: boolean }>({});
   
   const slideshowRef = useRef<FlatList>(null);
 
@@ -105,6 +107,19 @@ const VodScreen = () => {
     setCurrentIndex(index);
   }, []);
 
+  // PERBAIKAN: Fungsi untuk mendapatkan gambar dengan fallback
+  const getImageSource = useCallback((logoUrl: string | undefined, index?: string) => {
+    if (!logoUrl || errorImages[logoUrl]) {
+      return tvBanner;
+    }
+    return { uri: logoUrl };
+  }, [errorImages]);
+
+  // PERBAIKAN: Handle error image
+  const handleImageError = useCallback((url: string) => {
+    setErrorImages(prev => ({ ...prev, [url]: true }));
+  }, []);
+
   // --- Render Functions ---
   const renderSlideItem = ({ item }: { item: Channel }) => (
     <TouchableOpacity 
@@ -113,9 +128,10 @@ const VodScreen = () => {
       activeOpacity={0.9}
     >
       <Image 
-        source={item.logo ? { uri: item.logo } : tvBanner} 
+        source={getImageSource(item.logo, `slide-${item.url}`)} 
         style={styles.slideImage}
         resizeMode="cover"
+        onError={() => handleImageError(item.logo || '')}
       />
       <LinearGradient
         colors={['transparent', 'rgba(0,0,0,0.9)']}
@@ -128,8 +144,8 @@ const VodScreen = () => {
   );
 
   const renderVodItem = useCallback(({ item, index }: { item: Channel, index: number }) => {
-    // Menghilangkan margin kanan pada kolom terakhir agar sejajar
     const isLastInRow = (index + 1) % COLUMN_COUNT === 0;
+    const hasImageError = errorImages[item.logo || ''];
 
     return (
       <TouchableOpacity 
@@ -139,19 +155,37 @@ const VodScreen = () => {
       >
         <View style={styles.vodImageContainer}>
           <Image 
-            source={item.logo ? { uri: item.logo } : tvBanner} 
+            source={getImageSource(item.logo, `vod-${item.url}`)} 
             style={styles.vodImage}
             resizeMode="cover"
+            onError={() => handleImageError(item.logo || '')}
           />
-          {/* Badge Kualitas (Opsional) */}
+          {/* Badge Kualitas */}
           <View style={styles.qualityBadge}>
             <Text style={styles.qualityText}>HD</Text>
           </View>
+          {/* Tampilkan icon error jika gambar gagal dimuat */}
+          {hasImageError && (
+            <View style={styles.errorIconContainer}>
+              <Icon name="image-outline" size={24} color="rgba(255,255,255,0.5)" />
+            </View>
+          )}
         </View>
         <Text style={styles.vodTitle} numberOfLines={2}>{item.name}</Text>
       </TouchableOpacity>
     );
-  }, [handleChannelPress]);
+  }, [handleChannelPress, errorImages, getImageSource, handleImageError]);
+
+  // Render empty state
+  const renderEmptyState = useCallback(() => (
+    <View style={styles.emptyContainer}>
+      <Icon name="film-outline" size={64} color="#333" />
+      <Text style={styles.emptyTitle}>Belum Ada Film</Text>
+      <Text style={styles.emptyText}>
+        Belum ada konten film yang tersedia saat ini
+      </Text>
+    </View>
+  ), []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -177,7 +211,7 @@ const VodScreen = () => {
         ) : (
           <FlatList
             data={vodData}
-            keyExtractor={(item, index) => `vod-${index}`}
+            keyExtractor={(item, index) => `vod-${index}-${item.url}`}
             numColumns={COLUMN_COUNT}
             ListHeaderComponent={
               <View style={styles.listHeader}>
@@ -192,7 +226,7 @@ const VodScreen = () => {
                       showsHorizontalScrollIndicator={false}
                       onScroll={handleScroll}
                       renderItem={renderSlideItem}
-                      keyExtractor={(item, index) => `slide-${index}`}
+                      keyExtractor={(item, idx) => `slide-${idx}-${item.url}`}
                       snapToAlignment="center"
                       decelerationRate="fast"
                     />
@@ -203,7 +237,9 @@ const VodScreen = () => {
                     </View>
                   </View>
                 )}
-                <Text style={styles.sectionTitle}>Semua Koleksi Film</Text>
+                {vodData.length > 0 && (
+                  <Text style={styles.sectionTitle}>Semua Koleksi Film</Text>
+                )}
               </View>
             }
             renderItem={renderVodItem}
@@ -211,6 +247,7 @@ const VodScreen = () => {
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
             }
+            ListEmptyComponent={renderEmptyState}
           />
         )}
       </View>
@@ -339,12 +376,13 @@ const styles = StyleSheet.create({
   },
   vodImageContainer: {
     width: '100%',
-    aspectRatio: 2/3, // Rasio Poster Film Standar
+    aspectRatio: 2/3,
     borderRadius: 12,
     backgroundColor: '#1a1a1a',
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#222',
+    position: 'relative',
   },
   vodImage: {
     width: '100%',
@@ -358,11 +396,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 2,
     borderRadius: 4,
+    zIndex: 1,
   },
   qualityText: {
     color: '#fff',
     fontSize: 8,
     fontWeight: 'bold',
+  },
+  errorIconContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginTop: -20,
+    marginLeft: -20,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 20,
   },
   vodTitle: {
     color: '#efefef',
@@ -371,6 +423,24 @@ const styles = StyleSheet.create({
     marginTop: 8,
     textAlign: 'left',
     lineHeight: 16,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptyTitle: {
+    color: '#666',
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 16,
+  },
+  emptyText: {
+    color: '#444',
+    fontSize: 14,
+    marginTop: 8,
+    textAlign: 'center',
   },
 });
 

@@ -6,14 +6,16 @@ import {
   ActivityIndicator,
   Text,
   Dimensions,
-  Animated,
   AppState,
   AppStateStatus,
+  Animated,
 } from 'react-native';
-import Video, { ResizeMode } from 'react-native-video';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Video, { ResizeMode, OnBufferData, OnErrorData } from 'react-native-video';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { watchHistoryEvent } from '../utils/events';
 
 interface Props {
   url: string;
@@ -23,84 +25,161 @@ interface Props {
   onReload?: () => void;
 }
 
+interface WatchHistoryItem {
+  url: string;
+  name: string;
+  logo?: string;
+  group?: string;
+  timestamp: number;
+  watchedAt: string;
+}
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-const VideoPlayer: React.FC<Props> = ({ 
-  url, 
-  isFullscreen, 
-  onFullscreenChange, 
+const VideoPlayer: React.FC<Props> = ({
+  url,
+  isFullscreen,
+  onFullscreenChange,
   title,
   onReload
 }) => {
   const videoRef = useRef<Video>(null);
   const insets = useSafeAreaInsets();
-  
+
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showControls, setShowControls] = useState(true);
   const [aspectRatio, setAspectRatio] = useState<ResizeMode>(ResizeMode.CONTAIN);
   const [isLocked, setIsLocked] = useState(false);
-  const [bufferProgress, setBufferProgress] = useState(0);
   const [quality, setQuality] = useState<'auto' | 'low' | 'medium' | 'high'>('auto');
-  const [isFirstLoad, setIsFirstLoad] = useState(true); // Track first load only
-  
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [bufferProgress, setBufferProgress] = useState(0);
+
+  const hasSavedHistoryRef = useRef(false);
+
+  const loadingOpacity = useRef(new Animated.Value(1)).current;
+  const spinValue = useRef(new Animated.Value(0)).current;
+  const pulseValue = useRef(new Animated.Value(1)).current;
+
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appState = useRef(AppState.currentState);
+  const healthCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isManualReloadRef = useRef(false);
+  const lastProgressTimeRef = useRef(Date.now());
+  const lastCurrentTimeRef = useRef(0);
+  const stuckCountRef = useRef(0);
+
+  const saveToWatchHistory = useCallback(async (channel: { url: string; name: string; logo?: string; group?: string }) => {
+    if (!channel.url || !channel.name) return;
+
+    try {
+      const stored = await AsyncStorage.getItem("watchHistory");
+      let history = stored ? JSON.parse(stored) : [];
+
+      history = history.filter((item: WatchHistoryItem) => item.url !== channel.url);
+
+      history.unshift({
+        ...channel,
+        timestamp: Date.now(),
+        watchedAt: new Date().toISOString()
+      });
+      if (history.length > 50) {
+        history = history.slice(0, 50);
+      }
+
+      await AsyncStorage.setItem("watchHistory", JSON.stringify(history));
+
+      watchHistoryEvent.emit('historyUpdated');
+      console.log('Saved to watch history:', channel.name);
+    } catch (error) {
+      console.error("Save to history error:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(spinValue, {
+        toValue: 1,
+        duration: 1000,
+        useNativeDriver: true,
+      })
+    ).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseValue, {
+          toValue: 0.5,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseValue, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, []);
+
+  const spin = spinValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  const fadeOutLoading = useCallback(() => {
+    Animated.timing(loadingOpacity, {
+      toValue: 0,
+      duration: 500,
+      useNativeDriver: true,
+    }).start(() => {
+      setLoading(false);
+    });
+  }, [loadingOpacity]);
+
+  const showLoading = useCallback(() => {
+    setLoading(true);
+    Animated.timing(loadingOpacity, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [loadingOpacity]);
 
   const getBufferConfig = useCallback(() => {
-    switch(quality) {
-      case 'low': 
-        return {
-          minBufferMs: 3000,       
-          maxBufferMs: 15000,       
-          bufferForPlaybackMs: 2000, 
-          bufferForPlaybackAfterRebufferMs: 3000, 
-          backBufferDurationMs: 0,  
-        };
-      case 'medium': 
-        return {
-          minBufferMs: 8000,
-          maxBufferMs: 30000,
-          bufferForPlaybackMs: 3000,
-          bufferForPlaybackAfterRebufferMs: 5000,
-          backBufferDurationMs: 0,
-        };
-      case 'high': 
-        return {
-          minBufferMs: 15000,
-          maxBufferMs: 50000,
-          bufferForPlaybackMs: 5000,
-          bufferForPlaybackAfterRebufferMs: 10000,
-          backBufferDurationMs: 30000,
-        };
-      default: 
-        return {
-          minBufferMs: 5000,
-          maxBufferMs: 25000,
-          bufferForPlaybackMs: 2500,
-          bufferForPlaybackAfterRebufferMs: 4000,
-          backBufferDurationMs: 0,
-        };
-    }
-  }, [quality]);
+    return {
+      minBufferMs: 8000,
+      maxBufferMs: 30000,
+      bufferForPlaybackMs: 3000,
+      bufferForPlaybackAfterRebufferMs: 5000,
+      backBufferDurationMs: 0,
+    };
+  }, []);
 
-  const checkInternetSpeed = useCallback(() => {
-    const startTime = Date.now();
-    fetch('https://www.google.com/favicon.ico', { method: 'HEAD' })
-      .then(() => {
-        const duration = Date.now() - startTime;
-        if (duration > 1000) {
-          setQuality('low'); 
-        } else if (duration > 500) {
-          setQuality('medium'); 
-        } else {
-          setQuality('high'); 
-        }
-      })
-      .catch(() => {
-        setQuality('low'); 
+  const checkInternetSpeed = useCallback(async () => {
+    try {
+      const startTime = Date.now();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      await fetch('https://www.google.com/favicon.ico', {
+        method: 'HEAD',
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
+      const duration = Date.now() - startTime;
+
+      if (duration > 1500) {
+        setQuality('low');
+      } else if (duration > 700) {
+        setQuality('medium');
+      } else {
+        setQuality('high');
+      }
+    } catch (error) {
+      setQuality('medium');
+    }
   }, []);
 
   useEffect(() => {
@@ -119,137 +198,287 @@ const VideoPlayer: React.FC<Props> = ({
     };
   }, [checkInternetSpeed]);
 
-  const hideControls = useCallback(() => {
-    Animated.timing(fadeAnim, {
-      toValue: 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start((finished) => {
-      if (finished) setShowControls(false);
-    });
-  }, [fadeAnim]);
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
 
-  const resetTimer = useCallback(() => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    if (!paused) {
-      timeoutRef.current = setTimeout(() => {
-        hideControls();
+  const startAutoHideTimer = useCallback(() => {
+    clearTimer();
+
+    if (showControls && !isLocked && !paused && !loading && !isBuffering) {
+      timerRef.current = setTimeout(() => {
+        setShowControls(false);
+        timerRef.current = null;
       }, 4000);
     }
-  }, [paused, hideControls]);
+  }, [showControls, isLocked, paused, loading, isBuffering, clearTimer]);
 
-  const showControlsAnim = useCallback(() => {
-    setShowControls(true);
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-    resetTimer();
-  }, [fadeAnim, resetTimer]);
-
-  const toggleControls = () => {
-    if (showControls) {
-      hideControls();
+  useEffect(() => {
+    if (showControls && !isLocked && !paused && !loading && !isBuffering) {
+      startAutoHideTimer();
     } else {
-      showControlsAnim();
+      clearTimer();
     }
-  };
 
-  const handleMainPress = () => {
-    toggleControls();
-  };
+    return () => {
+      clearTimer();
+    };
+  }, [showControls, isLocked, paused, loading, isBuffering, startAutoHideTimer, clearTimer]);
+
+  const startHealthCheck = useCallback(() => {
+    if (healthCheckRef.current) {
+      clearTimeout(healthCheckRef.current);
+    }
+
+    if (!isFirstLoad && !paused && !isBuffering && !loading) {
+      healthCheckRef.current = setTimeout(() => {
+        const now = Date.now();
+        const timeSinceLastProgress = now - lastProgressTimeRef.current;
+
+        const isReallyStuck = timeSinceLastProgress > 20000 &&
+          lastCurrentTimeRef.current === 0 &&
+          !isBuffering &&
+          !loading;
+
+        if (isReallyStuck && !isManualReloadRef.current) {
+          stuckCountRef.current += 1;
+          console.log(`Stream stuck detected (${stuckCountRef.current}x), attempting recovery...`);
+
+          if (stuckCountRef.current <= 3) {
+            isManualReloadRef.current = true;
+
+            if (videoRef.current) {
+              videoRef.current.seek(0);
+            }
+
+            setTimeout(() => {
+              isManualReloadRef.current = false;
+              if (stuckCountRef.current >= 3) {
+                stuckCountRef.current = 0;
+              }
+            }, 3000);
+          } else {
+            console.log('Stream repeatedly stuck, please check connection');
+            stuckCountRef.current = 0;
+          }
+        } else if (timeSinceLastProgress > 5000 && lastCurrentTimeRef.current > 0) {
+          stuckCountRef.current = 0;
+        }
+
+        startHealthCheck();
+      }, 20000);
+    }
+  }, [isFirstLoad, paused, isBuffering, loading]);
+
+  const stopHealthCheck = useCallback(() => {
+    if (healthCheckRef.current) {
+      clearTimeout(healthCheckRef.current);
+      healthCheckRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isFirstLoad && !paused && !isBuffering) {
+      startHealthCheck();
+    } else {
+      stopHealthCheck();
+    }
+
+    return () => {
+      stopHealthCheck();
+    };
+  }, [isFirstLoad, paused, isBuffering, startHealthCheck, stopHealthCheck]);
+
+  const handleTap = useCallback(() => {
+    clearTimer();
+    setShowControls(prev => !prev);
+  }, [clearTimer]);
 
   const toggleAspectRatio = () => {
     const modes = [ResizeMode.CONTAIN, ResizeMode.COVER, ResizeMode.STRETCH];
     const nextIndex = (modes.indexOf(aspectRatio) + 1) % modes.length;
     setAspectRatio(modes[nextIndex]);
-    resetTimer();
   };
 
   const handlePlayPause = () => {
     setPaused(!paused);
-    resetTimer();
   };
 
   const handleLockToggle = () => {
-    setIsLocked(!isLocked);
-    resetTimer();
+    clearTimer();
+    setIsLocked(prev => !prev);
+    if (!isLocked) {
+      setShowControls(false);
+    } else {
+      setShowControls(true);
+    }
   };
 
   const handleReload = () => {
+    clearTimer();
+    isManualReloadRef.current = true;
+    stuckCountRef.current = 0;
+    showLoading();
+
     if (onReload) {
       onReload();
-    } else {
-      setLoading(true);
-      setBufferProgress(0);
-      setIsFirstLoad(true);
     }
-    resetTimer();
-  };
 
-  // PERBAIKAN: Jangan set loading false saat fullscreen change
-  const handleVideoLoad = () => {
-    setLoading(false);
+    setTimeout(() => {
+      isManualReloadRef.current = false;
+    }, 2000);
+  };
+  const handleVideoLoad = useCallback(() => {
+    console.log('Video loaded successfully');
     setIsFirstLoad(false);
-  };
+    setShowControls(true);
+    fadeOutLoading();
+    lastProgressTimeRef.current = Date.now();
+    stuckCountRef.current = 0;
 
-  const handleBuffer = ({ isBuffering }: { isBuffering: boolean }) => {
-    // Only show loading for actual buffering, not for fullscreen transition
-    if (!isFirstLoad && isBuffering) {
-      setLoading(true);
-    } else if (!isBuffering && !isFirstLoad) {
-      setLoading(false);
+    if (!hasSavedHistoryRef.current && title) {
+      hasSavedHistoryRef.current = true;
+      saveToWatchHistory({
+        url: url,
+        name: title,
+        logo: undefined,
+        group: undefined,
+      });
     }
-  };
+  }, [fadeOutLoading, title, url, saveToWatchHistory]);
 
-  const handleProgress = (data: any) => {
-    if (data.playableDuration && data.currentTime && !isFirstLoad) {
-      const buffered = data.playableDuration - data.currentTime;
-      const totalBuffer = data.playableDuration;
-      if (totalBuffer > 0) {
-        setBufferProgress((buffered / totalBuffer) * 100);
+  const handleBuffer = ({ isBuffering: buffering }: OnBufferData) => {
+    console.log('Buffering:', buffering);
+
+    if (buffering) {
+      setIsBuffering(true);
+      if (!isFirstLoad) {
+        showLoading();
+      }
+    } else {
+      setIsBuffering(false);
+      if (!isFirstLoad) {
+        fadeOutLoading();
+        lastProgressTimeRef.current = Date.now();
       }
     }
   };
 
-  const handleError = (error: any) => {
+  const handleProgress = (data: any) => {
+    if (data.currentTime) {
+      const now = Date.now();
+      const currentTimeDiff = Math.abs(data.currentTime - lastCurrentTimeRef.current);
+
+      lastProgressTimeRef.current = now;
+      lastCurrentTimeRef.current = data.currentTime;
+
+      if (data.playableDuration && data.currentTime) {
+        const buffered = data.playableDuration - data.currentTime;
+        const totalBuffer = data.playableDuration;
+        if (totalBuffer > 0) {
+          const progress = Math.min((buffered / totalBuffer) * 100, 100);
+          setBufferProgress(progress);
+        }
+      }
+
+      if (currentTimeDiff > 0.1) {
+        stuckCountRef.current = 0;
+      }
+    }
+  };
+
+  const handleError = (error: OnErrorData) => {
     console.log('Video Error:', error);
-    setLoading(false);
+    fadeOutLoading();
+    setIsBuffering(false);
+
+    if (error.error?.code === -1009 || error.error?.code === -1005) {
+      console.log('Network error, reconnecting...');
+      setTimeout(() => {
+        if (!isManualReloadRef.current) {
+          handleReload();
+        }
+      }, 2000);
+    }
+  };
+
+  const handleEnd = () => {
+    console.log('Stream ended, restarting...');
+    if (!isFirstLoad && !isManualReloadRef.current) {
+      setTimeout(() => {
+        handleReload();
+      }, 1000);
+    }
+  };
+
+  const handleReadyForDisplay = () => {
+    console.log('Ready for display');
+    fadeOutLoading();
+    setIsBuffering(false);
   };
 
   useEffect(() => {
-    showControlsAnim();
+    hasSavedHistoryRef.current = false;
+  }, [url]);
+
+  useEffect(() => {
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (healthCheckRef.current) clearTimeout(healthCheckRef.current);
     };
-  }, [showControlsAnim]);
+  }, []);
 
   const renderQualityBadge = () => {
-    if (quality === 'low') {
-      return (
-        <View style={styles.qualityBadge}>
-          <MaterialCommunityIcons name="signal-cellular-1" size={12} color="#ff9800" />
-          <Text style={styles.qualityText}>Slow</Text>
-        </View>
-      );
-    } else if (quality === 'medium') {
-      return (
-        <View style={styles.qualityBadge}>
-          <MaterialCommunityIcons name="signal-cellular-2" size={12} color="#4caf50" />
-          <Text style={styles.qualityText}>Normal</Text>
-        </View>
-      );
+    let icon = '';
+    let text = '';
+    let color = '';
+
+    switch (quality) {
+      case 'low':
+        icon = "signal-cellular-1";
+        text = "Slow";
+        color = "#ff9800";
+        break;
+      case 'medium':
+        icon = "signal-cellular-2";
+        text = "Normal";
+        color = "#4caf50";
+        break;
+      case 'high':
+        icon = "signal-cellular-3";
+        text = "Fast";
+        color = "#2196f3";
+        break;
+      default:
+        return null;
     }
-    return null;
+
+    return (
+      <View style={[styles.qualityBadge, { borderColor: color }]}>
+        <MaterialCommunityIcons name={icon as any} size={10} color={color} />
+        <Text style={[styles.qualityText, { color }]}>{text}</Text>
+      </View>
+    );
   };
 
   const renderTopBar = () => (
-    <View style={[styles.topBar, { paddingTop: isFullscreen ? 20 : Math.max(insets.top, 10) }]}>
-      <TouchableOpacity onPress={() => onFullscreenChange(false)} style={styles.backButton}>
-        <Ionicons name="chevron-back" size={24} color="#fff" />
-      </TouchableOpacity>
-      
+    <View style={[
+      styles.topBar,
+      {
+        paddingTop: isFullscreen ? 20 : Math.max(insets.top, 10),
+        paddingHorizontal: isFullscreen ? 20 : 12,
+      }
+    ]}>
+      {isFullscreen && (
+        <TouchableOpacity onPress={() => onFullscreenChange(false)} style={styles.backButton}>
+          <Ionicons name="chevron-back" size={22} color="#fff" />
+        </TouchableOpacity>
+      )}
+      {!isFullscreen && <View style={styles.backButtonPlaceholder} />}
+
       <View style={styles.titleContainer}>
         <Text style={styles.titleText} numberOfLines={1}>
           {isLocked ? "🔒 Layar Terkunci" : (title || "Streaming Live")}
@@ -259,7 +488,7 @@ const VideoPlayer: React.FC<Props> = ({
 
       {!isLocked && (
         <TouchableOpacity onPress={handleReload} style={styles.reloadButton}>
-          <MaterialCommunityIcons name="reload" size={22} color="#fff" />
+          <MaterialCommunityIcons name="reload" size={20} color="#fff" />
         </TouchableOpacity>
       )}
     </View>
@@ -268,20 +497,12 @@ const VideoPlayer: React.FC<Props> = ({
   const renderMiddleControls = () => (
     <View style={styles.midControls}>
       {!isLocked ? (
-        <>
-          <TouchableOpacity onPress={handlePlayPause} style={styles.playPauseButton} activeOpacity={0.8}>
-            <Ionicons name={paused ? "play" : "pause"} size={50} color="#fff" />
-          </TouchableOpacity>
-          
-          {loading && bufferProgress > 0 && isFirstLoad && (
-            <View style={styles.bufferIndicator}>
-              <View style={[styles.bufferFill, { width: `${bufferProgress}%` }]} />
-            </View>
-          )}
-        </>
+        <TouchableOpacity onPress={handlePlayPause} style={styles.playPauseButton} activeOpacity={0.8}>
+          <Ionicons name={paused ? "play" : "pause"} size={isFullscreen ? 50 : 40} color="#fff" />
+        </TouchableOpacity>
       ) : (
         <View style={styles.lockIconContainer}>
-          <Ionicons name="lock-closed" size={50} color="rgba(237, 236, 37, 0.6)" />
+          <Ionicons name="lock-closed" size={isFullscreen ? 50 : 40} color="rgba(237, 236, 37, 0.6)" />
           <Text style={styles.lockText}>Terkunci</Text>
         </View>
       )}
@@ -289,12 +510,18 @@ const VideoPlayer: React.FC<Props> = ({
   );
 
   const renderBottomBar = () => (
-    <View style={[styles.bottomBar, { paddingBottom: isFullscreen ? 20 : 15 }]}>
+    <View style={[
+      styles.bottomBar,
+      {
+        paddingBottom: isFullscreen ? 20 : (insets.bottom || 10),
+        paddingHorizontal: isFullscreen ? 20 : 12,
+      }
+    ]}>
       <TouchableOpacity onPress={handleLockToggle} style={[styles.bottomButton, isLocked && styles.activeBottomButton]}>
-        <Ionicons 
-          name={isLocked ? "lock-closed" : "lock-open-outline"} 
-          size={20} 
-          color={isLocked ? "#edec25" : "#fff"} 
+        <Ionicons
+          name={isLocked ? "lock-closed" : "lock-open-outline"}
+          size={isFullscreen ? 18 : 16}
+          color={isLocked ? "#edec25" : "#fff"}
         />
         <Text style={[styles.bottomButtonText, isLocked && styles.activeBottomButtonText]}>
           {isLocked ? "Terkunci" : "Kunci"}
@@ -304,25 +531,25 @@ const VideoPlayer: React.FC<Props> = ({
       {!isLocked && (
         <>
           <View style={styles.liveIndicator}>
-            <View style={styles.liveDot} />
+            <View style={[styles.liveDot, isBuffering && styles.liveDotBuffering]} />
             <Text style={styles.liveText}>LIVE</Text>
-            {quality === 'low' && (
-              <View style={styles.slowWarning}>
-                <Text style={styles.slowWarningText}>!</Text>
+            {isBuffering && (
+              <View style={styles.bufferingBadge}>
+                <Text style={styles.bufferingBadgeText}>BUFFERING</Text>
               </View>
             )}
           </View>
 
           <View style={styles.rightControls}>
             <TouchableOpacity onPress={toggleAspectRatio} style={styles.bottomButton}>
-              <MaterialCommunityIcons name="aspect-ratio" size={20} color="#fff" />
+              <MaterialCommunityIcons name="aspect-ratio" size={isFullscreen ? 18 : 16} color="#fff" />
               <Text style={styles.bottomButtonText}>
                 {aspectRatio === ResizeMode.CONTAIN ? "Fit" : aspectRatio === ResizeMode.COVER ? "Fill" : "Stretch"}
               </Text>
             </TouchableOpacity>
-            
+
             <TouchableOpacity onPress={() => onFullscreenChange(!isFullscreen)} style={styles.bottomButton}>
-              <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
+              <Ionicons name={isFullscreen ? "contract" : "expand"} size={isFullscreen ? 18 : 16} color="#fff" />
               <Text style={styles.bottomButtonText}>
                 {isFullscreen ? "Exit" : "Full"}
               </Text>
@@ -335,58 +562,76 @@ const VideoPlayer: React.FC<Props> = ({
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity 
-        activeOpacity={1} 
-        onPress={handleMainPress} 
-        style={styles.touchableArea}
-      >
-        <Video
-          ref={videoRef}
-          source={{ uri: url, headers: { 'User-Agent': 'VLC/3.0.11' } }}
-          style={styles.video}
-          resizeMode={aspectRatio}
-          paused={paused}
-          onLoad={handleVideoLoad}
-          onBuffer={handleBuffer}
-          onProgress={handleProgress}
-          onError={handleError}
-          playInBackground={false}
-          playWhenInactive={false}
-          ignoreSilentSwitch="ignore"
-          repeat={false}
-          bufferConfig={getBufferConfig()}
-          maxBitRate={quality === 'low' ? 500000 : quality === 'medium' ? 1500000 : 4000000}
-        />
+      <Video
+        ref={videoRef}
+        source={{
+          uri: url,
+          headers: {
+            'User-Agent': 'VLC/3.0.11',
+          }
+        }}
+        style={styles.video}
+        resizeMode={aspectRatio}
+        paused={paused}
+        onLoad={handleVideoLoad}
+        onBuffer={handleBuffer}
+        onProgress={handleProgress}
+        onError={handleError}
+        onEnd={handleEnd}
+        onReadyForDisplay={handleReadyForDisplay}
+        playInBackground={false}
+        playWhenInactive={false}
+        ignoreSilentSwitch="ignore"
+        repeat={false}
+        bufferConfig={getBufferConfig()}
+        maxBitRate={quality === 'low' ? 500000 : quality === 'medium' ? 1500000 : 4000000}
+        minLoadRetryCount={3}
+        retryDelayMs={2000}
+        progressUpdateInterval={250}
+      />
 
-        {showControls && (
-          <Animated.View style={[styles.controlsOverlay, { opacity: fadeAnim }]}>
-            <LinearGradient 
-              colors={['rgba(0,0,0,0.8)', 'transparent', 'rgba(0,0,0,0.8)']} 
-              style={StyleSheet.absoluteFillObject} 
-            />
-            {renderTopBar()}
-            {renderMiddleControls()}
-            {renderBottomBar()}
-          </Animated.View>
-        )}
+      <TouchableOpacity
+        style={styles.touchOverlay}
+        activeOpacity={1}
+        onPress={handleTap}
+      />
 
-        {/* PERBAIKAN: Only show loading for first load, not for fullscreen transition */}
-        {loading && isFirstLoad && (
-          <View style={styles.loadingOverlay}>
-            <View style={styles.loadingCard}>
-              <ActivityIndicator size="large" color="#edec25" />
-              <Text style={styles.loadingText}>
-                {quality === 'low' ? 'Koneksi lambat, memuat...' : 'Memuat Stream...'}
-              </Text>
-              {quality === 'low' && (
-                <Text style={styles.loadingSubText}>
-                  Streaming mungkin akan terputus-putus
-                </Text>
-              )}
-            </View>
+      {showControls && (
+        <View style={styles.controlsOverlay}>
+          <LinearGradient
+            colors={['rgba(0,0,0,0.8)', 'transparent', 'rgba(0,0,0,0.8)']}
+            style={StyleSheet.absoluteFillObject}
+          />
+          {renderTopBar()}
+          {renderMiddleControls()}
+          {renderBottomBar()}
+        </View>
+      )}
+
+      {loading && (
+        <Animated.View style={[styles.loadingOverlay, { opacity: loadingOpacity }]}>
+          <View style={styles.loadingContainer}>
+            <Animated.View style={{ transform: [{ rotate: spin }] }}>
+              <MaterialCommunityIcons
+                name="loading"
+                size={36}
+                color="rgba(237, 236, 37, 0.9)"
+              />
+            </Animated.View>
+            <Animated.Text style={[styles.loadingText, { opacity: pulseValue }]}>
+              {isBuffering ? 'Memuat stream...' : 'Menghubungkan...'}
+            </Animated.Text>
+            {bufferProgress > 0 && bufferProgress < 100 && (
+              <View style={styles.bufferProgressWrapper}>
+                <View style={styles.bufferProgressTrack}>
+                  <View style={[styles.bufferProgressFill, { width: `${bufferProgress}%` }]} />
+                </View>
+                <Text style={styles.bufferPercent}>{Math.round(bufferProgress)}%</Text>
+              </View>
+            )}
           </View>
-        )}
-      </TouchableOpacity>
+        </Animated.View>
+      )}
     </View>
   );
 };
@@ -396,13 +641,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  touchableArea: {
-    flex: 1,
-    justifyContent: 'center',
-  },
   video: {
-    width: '100%',
-    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  touchOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
   },
   controlsOverlay: {
     position: 'absolute',
@@ -411,31 +663,35 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     justifyContent: 'space-between',
+    zIndex: 20,
   },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
   },
+  backButtonPlaceholder: {
+    width: 36,
+    height: 36,
+  },
   titleContainer: {
     flex: 1,
-    marginHorizontal: 12,
+    marginHorizontal: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   titleText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     flex: 1,
   },
@@ -443,19 +699,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+    gap: 3,
+    borderWidth: 0.5,
   },
   qualityText: {
-    color: '#fff',
-    fontSize: 10,
+    fontSize: 8,
+    fontWeight: '600',
   },
   reloadButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -465,64 +722,50 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   playPauseButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: 'rgba(237, 236, 37, 0.3)',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: '#edec25',
-  },
-  bufferIndicator: {
-    position: 'absolute',
-    bottom: -40,
-    width: 200,
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  bufferFill: {
-    height: '100%',
-    backgroundColor: '#edec25',
   },
   lockIconContainer: {
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 30,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 25,
   },
   lockText: {
     color: 'rgba(237, 236, 37, 0.6)',
-    fontSize: 12,
-    marginTop: 8,
+    fontSize: 11,
+    marginTop: 6,
   },
   bottomBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
   },
   bottomButton: {
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
     flexDirection: 'row',
-    gap: 6,
+    gap: 4,
   },
   activeBottomButton: {
     backgroundColor: 'rgba(237, 236, 37, 0.2)',
-    borderWidth: 1,
+    borderWidth: 0.5,
     borderColor: '#edec25',
   },
   bottomButtonText: {
     color: '#fff',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '500',
   },
   activeBottomButtonText: {
@@ -532,40 +775,42 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,0,0,0.2)',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 16,
+    borderWidth: 0.5,
     borderColor: 'rgba(255,0,0,0.5)',
-    gap: 8,
+    gap: 6,
   },
   liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#ff0000',
+  },
+  liveDotBuffering: {
+    backgroundColor: '#ff9800',
+    opacity: 0.5,
   },
   liveText: {
     color: '#ff0000',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: 'bold',
   },
-  slowWarning: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#ff9800',
-    justifyContent: 'center',
-    alignItems: 'center',
+  bufferingBadge: {
+    backgroundColor: 'rgba(255, 152, 0, 0.3)',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  slowWarningText: {
-    color: '#fff',
-    fontSize: 10,
+  bufferingBadgeText: {
+    color: '#ff9800',
+    fontSize: 7,
     fontWeight: 'bold',
   },
   rightControls: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
   },
   loadingOverlay: {
     position: 'absolute',
@@ -575,26 +820,43 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    zIndex: 30,
   },
-  loadingCard: {
-    backgroundColor: 'rgba(0,0,0,0.9)',
-    paddingHorizontal: 24,
-    paddingVertical: 20,
-    borderRadius: 16,
+  loadingContainer: {
     alignItems: 'center',
-    gap: 12,
-    minWidth: 200,
+    justifyContent: 'center',
+    gap: 8,
   },
   loadingText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  loadingSubText: {
-    color: '#ff9800',
+    color: 'rgba(255, 255, 255, 0.9)',
     fontSize: 11,
-    textAlign: 'center',
+    fontWeight: '500',
+    letterSpacing: 0.3,
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  bufferProgressWrapper: {
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  bufferProgressTrack: {
+    width: 80,
+    height: 2,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 1,
+    overflow: 'hidden',
+  },
+  bufferProgressFill: {
+    height: '100%',
+    backgroundColor: '#edec25',
+    borderRadius: 1,
+  },
+  bufferPercent: {
+    color: 'rgba(237, 236, 37, 0.8)',
+    fontSize: 9,
+    fontWeight: '600',
   },
 });
 
