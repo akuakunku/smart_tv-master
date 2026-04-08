@@ -4,12 +4,20 @@
     "appVersionSource": "remote"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal"
+    },
     "production": {
       "autoIncrement": true,
       "android": {
-        "buildType": "apk"
-      },
-      "node": "20.18.0"
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      
+      }
     }
   }
 }
