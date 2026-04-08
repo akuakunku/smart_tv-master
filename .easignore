@@ -1,0 +1,8 @@
+# Copy everything from your .gitignore file here
+
+# Additional ignores specific to EAS builds
+
+# Ignore native directories (if you are using EAS Build)
+/android
+/ios
+
