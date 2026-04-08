@@ -9,9 +9,6 @@
       "android": {
         "buildType": "apk"
       },
-      "env": {
-        "COREPACK_ENABLE": "1"
-      },
       "node": "20.18.0"
     }
   }
