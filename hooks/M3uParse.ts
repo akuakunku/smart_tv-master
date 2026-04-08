@@ -23,8 +23,7 @@ interface CacheData {
 }
 
 const DEFAULT_M3U_URLS = [
-  { name: "Era Digital TV", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV2026/refs/heads/main/SPORTTV", enabled: false },
-  { name: "Backup List", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV/refs/heads/main/MONTOKTV", enabled: true },
+  { name: "Default", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV/refs/heads/main/MONTOKTV", enabled: true },
 ];
 
 const CACHE_KEY = "m3u_channels_cache";
