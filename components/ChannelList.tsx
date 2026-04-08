@@ -1,3 +1,4 @@
+// components/ChannelList.tsx
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   View,
@@ -10,7 +11,7 @@ import {
   Platform,
   ActivityIndicator,
 } from "react-native";
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import { useNavigation } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from 'expo-blur';
 
@@ -39,13 +40,12 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return shuffledArray;
 };
 
-// PERBAIKAN: ChannelLogo component dengan error handling yang lebih baik
+// OPTIMASI: ChannelLogo dengan memo dan proper caching
 const ChannelLogo = React.memo(({ logo, channelName, size = 80 }: { logo: string | null, channelName: string, size?: number }) => {
   const [hasError, setHasError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const defaultImage = require("../assets/images/maskable.png");
 
-  // PERBAIKAN: Reset error state when logo changes
   useEffect(() => {
     setHasError(false);
     setIsLoading(true);
@@ -81,14 +81,13 @@ const ChannelLogo = React.memo(({ logo, channelName, size = 80 }: { logo: string
         defaultSource={defaultImage}
         onLoad={handleLoad}
         onError={handleError}
-        accessibilityLabel={`${channelName} logo`}
         fadeDuration={Platform.OS === 'android' ? 0 : 200}
       />
     </View>
   );
 });
 
-// PERBAIKAN: ChannelItem component dengan memo yang tepat
+// OPTIMASI: ChannelItem dengan memo
 const ChannelItem = React.memo(({ 
   item, 
   cardWidth, 
@@ -145,11 +144,12 @@ const ChannelItem = React.memo(({
   );
 });
 
+// OPTIMASI: ChannelList dengan windowSize dan maxToRenderPerBatch yang lebih kecil
 const ChannelList: React.FC<ChannelListProps> = ({
   channels,
   currentChannelUrl,
   onChannelSelect,
-  maxRecommendations = 12,
+  maxRecommendations = 8, // Kurangi dari 12 menjadi 8
   showSectionTitle = true
 }) => {
   const { width } = useWindowDimensions();
@@ -161,12 +161,12 @@ const ChannelList: React.FC<ChannelListProps> = ({
   const previousGroupRef = useRef<string>('');
   const isMountedRef = useRef(true);
 
-  // Calculate responsive card width
+  // Calculate responsive card width - lebih kecil untuk menampung lebih banyak
   const cardWidth = useMemo(() => {
-    if (width <= 360) return 120;
-    if (width <= 480) return 140;
-    if (width <= 768) return 160;
-    return 180;
+    if (width <= 360) return 100;
+    if (width <= 480) return 120;
+    if (width <= 768) return 140;
+    return 160;
   }, [width]);
 
   // Get current channel group
@@ -175,7 +175,7 @@ const ChannelList: React.FC<ChannelListProps> = ({
     return currentChannel?.group || null;
   }, [channels, currentChannelUrl]);
 
-  // Generate recommendations based on current channel group
+  // Generate recommendations
   const generateRecommendations = useCallback(() => {
     if (!isMountedRef.current) return;
     
@@ -186,10 +186,8 @@ const ChannelList: React.FC<ChannelListProps> = ({
         channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
       );
       
-      // Don't shuffle if group hasn't changed to maintain consistency
       let shuffledChannels;
       if (previousGroupRef.current === currentChannelGroup) {
-        // Keep existing order if same group
         shuffledChannels = filteredChannels.slice(0, maxRecommendations);
       } else {
         shuffledChannels = shuffleArray(filteredChannels).slice(0, maxRecommendations);
@@ -198,7 +196,6 @@ const ChannelList: React.FC<ChannelListProps> = ({
       
       setRecommendedChannels(shuffledChannels);
     } else {
-      // If no group, show random channels from different groups
       const otherChannels = channels.filter(channel => channel.url !== currentChannelUrl);
       const shuffledChannels = shuffleArray(otherChannels).slice(0, maxRecommendations);
       setRecommendedChannels(shuffledChannels);
@@ -206,27 +203,17 @@ const ChannelList: React.FC<ChannelListProps> = ({
     setIsLoading(false);
   }, [channels, currentChannelUrl, currentChannelGroup, maxRecommendations]);
 
-  // Generate recommendations when dependencies change
   useEffect(() => {
     isMountedRef.current = true;
-    
-    // Small delay to prevent flickering
     const timer = setTimeout(() => {
       generateRecommendations();
-    }, 100);
+    }, 50); // Kurangi delay
 
     return () => {
       isMountedRef.current = false;
       clearTimeout(timer);
     };
   }, [generateRecommendations]);
-
-  // Scroll to top when recommendations change
-  useEffect(() => {
-    if (flatListRef.current && recommendedChannels.length > 0 && !isLoading) {
-      flatListRef.current.scrollToOffset({ offset: 0, animated: false });
-    }
-  }, [currentChannelUrl, recommendedChannels.length, isLoading]);
 
   const handleChannelChange = useCallback((channelUrl: string) => {
     const selectedChannel = channels.find(c => c.url === channelUrl);
@@ -243,7 +230,6 @@ const ChannelList: React.FC<ChannelListProps> = ({
     if (isRefreshing) return;
     setIsRefreshing(true);
     
-    // Regenerate recommendations with shuffle
     if (currentChannelGroup) {
       const filteredChannels = channels.filter(
         channel => channel.group === currentChannelGroup && channel.url !== currentChannelUrl
@@ -258,7 +244,7 @@ const ChannelList: React.FC<ChannelListProps> = ({
     
     setTimeout(() => {
       setIsRefreshing(false);
-    }, 500);
+    }, 300);
   }, [channels, currentChannelGroup, currentChannelUrl, maxRecommendations, isRefreshing]);
 
   const renderItem = useCallback(({ item }: { item: Channel }) => (
@@ -291,7 +277,7 @@ const ChannelList: React.FC<ChannelListProps> = ({
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="small" color="#edec25" />
-        <Text style={styles.loadingText}>Memuat rekomendasi...</Text>
+        <Text style={styles.loadingText}>Loading recommendations...</Text>
       </View>
     );
   }
@@ -299,8 +285,7 @@ const ChannelList: React.FC<ChannelListProps> = ({
   if (recommendedChannels.length === 0 && !isLoading) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>Tidak ada channel lain</Text>
-        <Text style={styles.emptySubText}>Coba refresh daftar channel</Text>
+        <Text style={styles.emptyText}>No other channels available</Text>
       </View>
     );
   }
@@ -337,13 +322,18 @@ const ChannelList: React.FC<ChannelListProps> = ({
         contentContainerStyle={styles.contentContainer}
         snapToAlignment="start"
         decelerationRate="fast"
-        initialNumToRender={4}
-        maxToRenderPerBatch={6}
-        windowSize={10}
+        initialNumToRender={3}
+        maxToRenderPerBatch={4}
+        windowSize={5}
         removeClippedSubviews={Platform.OS === 'android'}
         maintainVisibleContentPosition={{
           minIndexForVisible: 0,
         }}
+        getItemLayout={(data, index) => ({
+          length: cardWidth + 16,
+          offset: (cardWidth + 16) * index,
+          index,
+        })}
       />
     </View>
   );
@@ -351,34 +341,32 @@ const ChannelList: React.FC<ChannelListProps> = ({
 
 const styles = StyleSheet.create({
   recommendationContainer: { 
-    marginTop: 20, 
-    paddingHorizontal: 10,
-    marginBottom: 10,
+    marginTop: 16, 
+    marginBottom: 8,
   },
   headerContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginVertical: 12,
+    marginVertical: 8,
     marginHorizontal: 12,
   },
   recommendationTitle: { 
-    fontSize: 18, 
+    fontSize: 16, 
     fontWeight: 'bold', 
     color: '#fff',
-    letterSpacing: 0.5,
   },
   channelCount: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#888',
     marginTop: 2,
   },
   refreshButton: {
     backgroundColor: 'rgba(237, 236, 37, 0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 16,
+    borderWidth: 0.5,
     borderColor: 'rgba(237, 236, 37, 0.3)',
   },
   refreshButtonDisabled: {
@@ -386,12 +374,12 @@ const styles = StyleSheet.create({
   },
   refreshText: {
     color: '#edec25',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   channelCard: { 
-    marginHorizontal: 8, 
-    borderRadius: 16, 
+    marginHorizontal: 6, 
+    borderRadius: 14, 
     overflow: 'hidden',
     ...Platform.select({ 
       ios: { 
@@ -401,36 +389,36 @@ const styles = StyleSheet.create({
         shadowRadius: 4 
       }, 
       android: { 
-        elevation: 6 
+        elevation: 4 
       } 
     }),
   },
   activeCard: {
     transform: [{ scale: 1.02 }],
-    elevation: 8,
+    elevation: 6,
   },
   cardGradient: { 
-    height: 210, 
+    height: 190, 
     padding: 2, 
-    borderRadius: 16,
+    borderRadius: 14,
   },
   blurContainer: { 
     flex: 1, 
-    borderRadius: 14, 
+    borderRadius: 12, 
     overflow: 'hidden', 
     alignItems: 'center', 
     justifyContent: 'space-between', 
-    padding: 12,
+    padding: 10,
     backgroundColor: 'rgba(0,0,0,0.3)',
   },
   imageContainer: { 
     position: 'relative', 
-    marginBottom: 12,
+    marginBottom: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
-    elevation: 5,
+    elevation: 4,
   },
   logoWrapper: {
     overflow: 'hidden',
@@ -459,7 +447,7 @@ const styles = StyleSheet.create({
     left: 0, 
     right: 0, 
     bottom: 0, 
-    borderRadius: 40, 
+    borderRadius: 35, 
     backgroundColor: 'rgba(237, 236, 37, 0.15)', 
     justifyContent: 'center', 
     alignItems: 'center',
@@ -478,10 +466,10 @@ const styles = StyleSheet.create({
   },
   channelName: { 
     color: '#fff', 
-    fontSize: 13, 
+    fontSize: 12, 
     fontWeight: '600', 
     textAlign: 'center', 
-    marginBottom: 4,
+    marginBottom: 2,
     textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
@@ -491,61 +479,55 @@ const styles = StyleSheet.create({
   },
   groupName: { 
     color: 'rgba(255,255,255,0.6)', 
-    fontSize: 11, 
+    fontSize: 10, 
     textAlign: 'center',
   },
   nowPlayingBadge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
+    top: 6,
+    right: 6,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(237, 236, 37, 0.9)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
     gap: 4,
   },
   liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#ff4444',
   },
   nowPlayingText: {
     color: '#1e1e1e',
-    fontSize: 8,
+    fontSize: 7,
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },
   loadingContainer: {
-    paddingVertical: 30,
+    paddingVertical: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   loadingText: {
     color: '#888',
-    fontSize: 12,
-    marginTop: 8,
+    fontSize: 11,
+    marginTop: 6,
   },
   emptyContainer: {
-    paddingVertical: 30,
+    paddingVertical: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   emptyText: {
     color: '#888',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  emptySubText: {
-    color: '#666',
     fontSize: 12,
     textAlign: 'center',
-    marginTop: 4,
   },
   contentContainer: { 
-    paddingRight: 10,
+    paddingHorizontal: 6,
     paddingVertical: 4,
   },
 });

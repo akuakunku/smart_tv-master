@@ -12,9 +12,26 @@ export interface Channel {
   logo: string | null;
   userAgent: string;
   referrer: string | null;
+  origin?: string | null;
   licenseType?: string | null;
   licenseKey?: string | null;
 }
+
+export const getChannelHeaders = (channel: Channel) => {
+  const headers: Record<string, string> = {
+    'User-Agent': channel.userAgent || 'VLC/3.0.11 LibVLC/3.0.11',
+  };
+
+  if (channel.referrer) {
+    headers['Referer'] = channel.referrer;
+  }
+
+  if (channel.origin) {
+    headers['Origin'] = channel.origin;
+  }
+
+  return headers;
+};
 
 interface CacheData {
   channels: Channel[];
@@ -23,7 +40,8 @@ interface CacheData {
 }
 
 const DEFAULT_M3U_URLS = [
-  { name: "Default", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV/refs/heads/main/MONTOKTV", enabled: true },
+  { name: "Default", url: "https://pastebin.com/raw/4zUPUCVr", enabled: false },
+  { name: "Backup 1", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV/refs/heads/main/MONTOKTV", enabled: true },
 ];
 
 const CACHE_KEY = "m3u_channels_cache";
@@ -43,7 +61,6 @@ const useM3uParse = () => {
   const cancelTokenRef = useRef<CancelTokenSource | null>(null);
   const isMountedRef = useRef<boolean>(true);
 
-  // --- Validasi URL ---
   const isValidUrl = useCallback((url: string): boolean => {
     try {
       const urlObj = new URL(url);
@@ -53,18 +70,33 @@ const useM3uParse = () => {
     }
   }, []);
 
-  // --- Parser Robust ---
   const parseM3uBody = useCallback((data: string): Channel[] => {
     const lines = data.split(/\r?\n/);
     const result: Channel[] = [];
     let currentMeta: Partial<Channel> | null = null;
+    let pendingLicenseType: string | null = null;
+    let pendingLicenseKey: string | null = null;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
 
+      if (line.startsWith("#KODIPROP:")) {
+        const kodipropMatch = line.match(/#KODIPROP:(.+?)=(.+)/);
+        if (kodipropMatch) {
+          const key = kodipropMatch[1].trim();
+          const value = kodipropMatch[2].trim();
+
+          if (key === 'inputstream.adaptive.license_type') {
+            pendingLicenseType = value;
+          } else if (key === 'inputstream.adaptive.license_key') {
+            pendingLicenseKey = value;
+          }
+        }
+        continue;
+      }
+
       if (line.startsWith("#EXTINF:")) {
-        // Regex yang lebih kuat untuk menangkap atribut dengan/tanpa kutip
         const tvgIdMatch = line.match(/tvg-id=["']?([^"'\s,]+)["']?/i);
         const tvgNameMatch = line.match(/tvg-name=["']?([^"']*)["']?/i);
         const logoMatch = line.match(/tvg-logo=["']?([^"']*)["']?/i);
@@ -77,41 +109,41 @@ const useM3uParse = () => {
           group: groupMatch?.[1] || "Lainnya",
         };
 
-        // Menarik Nama Channel (setelah koma terakhir)
         const lastCommaIndex = line.lastIndexOf(",");
         info.name = lastCommaIndex !== -1 ? line.substring(lastCommaIndex + 1).trim() : "Unknown Channel";
 
-        // Bersihkan nama dari karakter aneh
         if (info.name) {
           info.name = info.name.replace(/[^\x20-\x7E]/g, '').trim();
           if (!info.name) info.name = "Unknown Channel";
         }
 
         currentMeta = info;
+        continue;
       }
-      else if (line.match(/^(https?:\/\/|rtsp:\/\/|rtmp:\/\/)/i)) {
+      
+      if (line.match(/^(https?:\/\/|rtsp:\/\/|rtmp:\/\/)/i)) {
         if (currentMeta) {
           let streamUrl = line;
           let userAgent = "VLC/3.0.11 LibVLC/3.0.11";
           let referrer = null;
-          let licenseType = null;
-          let licenseKey = null;
+          let origin = null;
+          let licenseType = pendingLicenseType;
+          let licenseKey = pendingLicenseKey;
 
-          // Parsing KODI/VLC style pipe parameters (|)
           if (streamUrl.includes("|")) {
             const parts = streamUrl.split("|");
             streamUrl = parts[0].trim();
             const paramsPart = parts[1];
 
-            // Extract User-Agent
             const uaMatch = paramsPart.match(/User-Agent=([^&]*)/i);
             if (uaMatch) userAgent = decodeURIComponent(uaMatch[1]);
 
-            // Extract Referer
             const refMatch = paramsPart.match(/Referer=([^&]*)/i);
             if (refMatch) referrer = decodeURIComponent(refMatch[1]);
 
-            // Extract DRM (License)
+            const originMatch = paramsPart.match(/Origin=([^&]*)/i);
+            if (originMatch) origin = decodeURIComponent(originMatch[1]);
+
             const licTypeMatch = paramsPart.match(/license_type=([^&]*)/i);
             if (licTypeMatch) licenseType = licTypeMatch[1];
 
@@ -124,15 +156,18 @@ const useM3uParse = () => {
             url: streamUrl,
             userAgent,
             referrer,
-            licenseType,
-            licenseKey,
+            origin,
+            licenseType: licenseType || null,
+            licenseKey: licenseKey || null,
           });
+          
           currentMeta = null;
+          pendingLicenseType = null;
+          pendingLicenseKey = null;
         }
       }
     }
 
-    // Filter duplicate URLs
     const uniqueResults = result.filter((channel, index, self) =>
       index === self.findIndex(c => c.url === channel.url)
     );
@@ -140,25 +175,21 @@ const useM3uParse = () => {
     return uniqueResults;
   }, []);
 
-  // --- Load Cache dengan Expiry ---
   const loadCache = useCallback(async (): Promise<{ channels: Channel[]; groups: string[] } | null> => {
     try {
       const cached = await AsyncStorage.getItem(CACHE_KEY);
       if (cached) {
         const cacheData: CacheData = JSON.parse(cached);
-        // Cek apakah cache masih valid (belum expired)
         if (Date.now() - cacheData.timestamp < CACHE_EXPIRY_MS) {
           return { channels: cacheData.channels, groups: cacheData.groups };
         }
       }
       return null;
     } catch (e) {
-      console.error("Load cache error", e);
       return null;
     }
   }, []);
 
-  // --- Save Cache ---
   const saveCache = useCallback(async (channelsData: Channel[], groupsData: string[]) => {
     try {
       const cacheData: CacheData = {
@@ -167,12 +198,9 @@ const useM3uParse = () => {
         timestamp: Date.now(),
       };
       await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
-    } catch (e) {
-      console.error("Save cache error", e);
-    }
+    } catch (e) {}
   }, []);
 
-  // --- CRUD URL ---
   const loadUserUrls = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(USER_M3U_URLS_KEY);
@@ -183,63 +211,13 @@ const useM3uParse = () => {
         }
       }
     } catch (e) {
-      console.error("Load URLs error", e);
-      if (isMountedRef.current) {
-        setUserUrls([]);
-      }
+      if (isMountedRef.current) setUserUrls([]);
     }
   }, []);
 
-  const addUrl = useCallback(async (newUrl: string) => {
-    if (!isValidUrl(newUrl)) {
-      setError("URL tidak valid");
-      return false;
-    }
-
-    try {
-      const stored = await AsyncStorage.getItem(USER_M3U_URLS_KEY);
-      const list = stored ? JSON.parse(stored) : [];
-      if (!list.includes(newUrl)) {
-        const newList = [...list, newUrl];
-        await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
-        if (isMountedRef.current) {
-          setUserUrls(newList);
-        }
-        return true;
-      }
-      return false;
-    } catch (e) {
-      console.error("Add URL Error", e);
-      setError("Gagal menambah URL");
-      return false;
-    }
-  }, [isValidUrl]);
-
-  const deleteUrl = useCallback(async (urlToDelete: string) => {
-    try {
-      const newList = userUrls.filter(u => u !== urlToDelete);
-      await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
-      if (isMountedRef.current) {
-        setUserUrls(newList);
-      }
-
-      // Jika URL yang dihapus adalah active URL, pindah ke default
-      const activeUrl = await AsyncStorage.getItem(ACTIVE_URL_KEY);
-      if (activeUrl === urlToDelete) {
-        const defaultUrl = DEFAULT_M3U_URLS.find(u => u.enabled)?.url || DEFAULT_M3U_URLS[0].url;
-        await changeActiveUrl(defaultUrl);
-      }
-    } catch (e) {
-      console.error("Delete URL Error", e);
-      setError("Gagal menghapus URL");
-    }
-  }, [userUrls]);
-
-  // --- Core Fetcher ---
   const fetchM3u = useCallback(async (overrideUrl?: string) => {
-    // Cancel previous request if exists
     if (cancelTokenRef.current) {
-      cancelTokenRef.current.cancel("Request dibatalkan karena request baru");
+      cancelTokenRef.current.cancel("New request started");
       cancelTokenRef.current = null;
     }
 
@@ -249,23 +227,21 @@ const useM3uParse = () => {
     setLoading(true);
     fetchInProgressRef.current = true;
 
-    // Create new cancel token
     cancelTokenRef.current = axios.CancelToken.source();
 
     try {
       let activeUrl = overrideUrl || (await AsyncStorage.getItem(ACTIVE_URL_KEY));
 
       if (!activeUrl) {
-        activeUrl = DEFAULT_M3U_URLS.find(u => u.enabled)?.url || DEFAULT_M3U_URLS[0].url;
+        const enabledDefault = DEFAULT_M3U_URLS.find(u => u.enabled);
+        activeUrl = enabledDefault?.url || DEFAULT_M3U_URLS[0].url;
         await AsyncStorage.setItem(ACTIVE_URL_KEY, activeUrl);
       }
 
-      // Validate URL
       if (!isValidUrl(activeUrl)) {
         throw new Error("URL M3U tidak valid");
       }
 
-      // Fetch Data dengan Timeout & Header
       const response = await axios.get(activeUrl, {
         timeout: 20000,
         headers: {
@@ -286,21 +262,14 @@ const useM3uParse = () => {
           setError(null);
         }
 
-        // Simpan Cache
         await saveCache(parsedChannels, uniqueGroups);
       } else {
         throw new Error("M3U Kosong atau Format Salah");
       }
 
     } catch (err: any) {
-      if (axios.isCancel(err)) {
-        console.log("Request cancelled:", err.message);
-        return;
-      }
+      if (axios.isCancel(err)) return;
 
-      console.error("Fetch error:", err);
-
-      // Try to load from cache
       const cached = await loadCache();
       if (cached && cached.channels.length > 0) {
         if (isMountedRef.current) {
@@ -331,7 +300,6 @@ const useM3uParse = () => {
       return false;
     }
 
-    // Reset state sebelum fetch
     if (isMountedRef.current) {
       setLoading(true);
       setChannels([]);
@@ -341,34 +309,61 @@ const useM3uParse = () => {
 
     try {
       await AsyncStorage.setItem(ACTIVE_URL_KEY, url);
-      // Panggil fetchM3u dengan parameter URL baru
       await fetchM3u(url);
       return true;
     } catch (e) {
-      console.error("Change active URL error:", e);
-      if (isMountedRef.current) {
-        setError("Gagal berpindah playlist");
-      }
+      if (isMountedRef.current) setError("Gagal berpindah playlist");
       return false;
     }
-    // PERBAIKAN: Hapus setLoading(false) di sini karena sudah di handle di fetchM3u
   }, [fetchM3u, isValidUrl]);
 
-  const refetch = useCallback(() => fetchM3u(), [fetchM3u]);
+  const addUrl = useCallback(async (newUrl: string) => {
+    if (!isValidUrl(newUrl)) {
+      setError("URL tidak valid");
+      return false;
+    }
 
-  // Clear cache
+    try {
+      const stored = await AsyncStorage.getItem(USER_M3U_URLS_KEY);
+      const list = stored ? JSON.parse(stored) : [];
+      if (!list.includes(newUrl)) {
+        const newList = [...list, newUrl];
+        await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
+        if (isMountedRef.current) setUserUrls(newList);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      setError("Gagal menambah URL");
+      return false;
+    }
+  }, [isValidUrl]);
+
+  const deleteUrl = useCallback(async (urlToDelete: string) => {
+    try {
+      const newList = userUrls.filter(u => u !== urlToDelete);
+      await AsyncStorage.setItem(USER_M3U_URLS_KEY, JSON.stringify(newList));
+      if (isMountedRef.current) setUserUrls(newList);
+
+      const activeUrl = await AsyncStorage.getItem(ACTIVE_URL_KEY);
+      if (activeUrl === urlToDelete) {
+        const defaultUrl = DEFAULT_M3U_URLS.find(u => u.enabled)?.url || DEFAULT_M3U_URLS[0].url;
+        await changeActiveUrl(defaultUrl);
+      }
+    } catch (e) {
+      setError("Gagal menghapus URL");
+    }
+  }, [userUrls, changeActiveUrl]);
+
+  const refetch = useCallback(() => fetchM3u(), [fetchM3u]);
   const clearCache = useCallback(async () => {
     try {
       await AsyncStorage.removeItem(CACHE_KEY);
       setError("Cache berhasil dibersihkan");
       return true;
-    } catch (e) {
-      console.error("Clear cache error", e);
-      return false;
-    }
+    } catch (e) { return false; }
   }, []);
 
-  // Search channels with debounce support
   const searchChannels = useCallback((query: string) => {
     if (!query || query.length < 2) return channels;
     const lowerQuery = query.toLowerCase();
@@ -378,62 +373,29 @@ const useM3uParse = () => {
     );
   }, [channels]);
 
-  // Get channels by group
-  const getChannelsByGroup = useCallback((group: string) => {
-    return channels.filter(c => c.group === group);
-  }, [channels]);
+  const getChannelsByGroup = useCallback((group: string) => channels.filter(c => c.group === group), [channels]);
+  const getChannelByUrl = useCallback((url: string) => channels.find(c => c.url === url), [channels]);
+  const getTotalChannels = useCallback(() => channels.length, [channels]);
+  const getGroupsCount = useCallback(() => groups.length, [groups]);
 
-  // Get channel by URL
-  const getChannelByUrl = useCallback((url: string) => {
-    return channels.find(c => c.url === url);
-  }, [channels]);
-
-  // Get total channels count
-  const getTotalChannels = useCallback(() => {
-    return channels.length;
-  }, [channels]);
-
-  // Get groups count
-  const getGroupsCount = useCallback(() => {
-    return groups.length;
-  }, [groups]);
-
-  // Initial Load
   useEffect(() => {
     isMountedRef.current = true;
-    
-    loadUserUrls();
-    fetchM3u();
-
-    // Cleanup on unmount
+    const init = async () => {
+      await loadUserUrls();
+      await fetchM3u();
+    };
+    init();
     return () => {
       isMountedRef.current = false;
-      if (cancelTokenRef.current) {
-        cancelTokenRef.current.cancel("Component unmounted");
-        cancelTokenRef.current = null;
-      }
+      if (cancelTokenRef.current) cancelTokenRef.current.cancel("Component unmounted");
     };
-  }, []); 
+  }, []);
 
   return {
-    channels,
-    groups,
-    loading,
-    error,
-    isFetching,
-    refetch,
-    addUrl,
-    deleteUrl,
-    userUrls,
-    changeActiveUrl,
-    defaultUrls: DEFAULT_M3U_URLS,
-    clearCache,
-    searchChannels,
-    getChannelsByGroup,
-    getChannelByUrl,
-    getTotalChannels,
-    getGroupsCount,
-    isValidUrl,
+    channels, groups, loading, error, isFetching, refetch, addUrl, deleteUrl,
+    userUrls, changeActiveUrl, defaultUrls: DEFAULT_M3U_URLS, clearCache,
+    searchChannels, getChannelsByGroup, getChannelByUrl, getTotalChannels,
+    getGroupsCount, isValidUrl,
   };
 };
 

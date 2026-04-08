@@ -21,7 +21,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import VideoPlayer from "../../components/VideoPlayer";
 import EPGInfo from "../../components/EPGInfo";
 import ChannelList from "../../components/ChannelList";
-import useM3uParse from "../../hooks/M3uParse";
+import useM3uParse, { getChannelHeaders } from "../../hooks/M3uParse";
 import { useFavorites } from "../../contexts/FavoriteContext";
 import Colors from "../../constants/Colors";
 
@@ -46,6 +46,7 @@ const PlayerScreen = () => {
   );
 
   const channelName = selectedChannel?.name || "Unknown Channel";
+  const channelHeaders = selectedChannel ? getChannelHeaders(selectedChannel) : {};
 
   const isTablet = windowWidth >= 768;
 
@@ -184,6 +185,11 @@ const PlayerScreen = () => {
             onFullscreenChange={setIsFullscreen}
             title={channelName}
             onReload={() => setVideoKey(prev => prev + 1)}
+            licenseType={selectedChannel?.licenseType}
+            licenseKey={selectedChannel?.licenseKey}
+            userAgent={channelHeaders['User-Agent']}
+            referrer={channelHeaders['Referer']}
+            origin={channelHeaders['Origin']}
           />
         </View>
 
@@ -207,7 +213,6 @@ const PlayerScreen = () => {
             >
               <EPGInfo tvgId={selectedChannel?.tvgId} channelName={channelName} />
             </Section>
-
 
             <ChannelList
               channels={channels}
