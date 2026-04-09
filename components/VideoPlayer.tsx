@@ -176,14 +176,24 @@ const VideoPlayer: React.FC<Props> = ({ url, isFullscreen, onFullscreenChange, t
     }
   };
 
-  const handleError = (error: OnErrorData) => {
-    fadeOutLoading(); setIsBuffering(false);
-    if (error.error?.code === -1009 || error.error?.code === -1005) {
-      setTimeout(() => { if (!isManualReloadRef.current) handleReload(); }, 3000);
-    }
-  };
+  const handleError = useCallback((error: OnErrorData) => {
+  console.log('❌ [VIDEO] Error:', error);
+  
+  // Jangan langsung fadeOutLoading, biarkan auto-reconnect bekerja
+  if (error.error?.code === -1009 || error.error?.code === -1005) {
+    console.log('🌐 [NETWORK] Network error, will auto-reconnect...');
+  } else {
+    // Hanya untuk error fatal
+    fadeOutLoading();
+    setIsBuffering(false);
+  }
+}, [fadeOutLoading]);
+
+
 
   const handleEnd = () => { if (!isFirstLoad && !isManualReloadRef.current) setTimeout(() => handleReload(), 1000); };
+    console.log('🏁 [VIDEO] Stream ended, auto-reconnecting...');
+
   const handleReadyForDisplay = () => { fadeOutLoading(); setIsBuffering(false); };
 
   useEffect(() => { hasSavedHistoryRef.current = false; }, [url]);
