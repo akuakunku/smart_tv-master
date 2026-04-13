@@ -12,13 +12,10 @@ import LottieView from "lottie-react-native";
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// IMPORT PROVIDERS
 import { FavoriteProvider } from "../contexts/FavoriteContext";
-import { EPGProvider } from "../contexts/EPGContext";
 import DrawerNavigator from "./(tabs)/DrawerNavigator";
 import loadingAnimation from "../assets/animations/loading.json";
 
-// Responsive Network Banner Component
 const NetworkBanner = ({ isOnline, showBackOnline, networkType, fadeAnim, slideAnim }: any) => {
     const insets = useSafeAreaInsets();
     const { width: windowWidth } = useWindowDimensions();
@@ -132,7 +129,7 @@ export default function Layout() {
 
     return (
         <SafeAreaProvider>
-            <EPGProvider>
+            
                 <FavoriteProvider>
                     <View style={styles.container}>
                         <StatusBar style="light" translucent backgroundColor="transparent" />
@@ -190,7 +187,7 @@ export default function Layout() {
                         )}
                     </View>
                 </FavoriteProvider>
-            </EPGProvider>
+            
         </SafeAreaProvider>
     );
 }

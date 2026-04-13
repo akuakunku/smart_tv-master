@@ -1,3 +1,4 @@
+// app/(tabs)/PlayerScreen.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View,
@@ -11,70 +12,184 @@ import {
   TouchableOpacity,
   Platform,
   useWindowDimensions,
+  Alert,
+  Dimensions,
 } from "react-native";
 import { useNavigation, useFocusEffect, useRoute } from "@react-navigation/native";
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Toast from "react-native-toast-message";
 import * as ScreenOrientation from 'expo-screen-orientation';
-
+import { isValidVideoUrl } from '../../utils/videoFormats';
 import VideoPlayer from "../../components/VideoPlayer";
-import EPGInfo from "../../components/EPGInfo";
 import ChannelList from "../../components/ChannelList";
 import useM3uParse, { getChannelHeaders } from "../../hooks/M3uParse";
 import { useFavorites } from "../../contexts/FavoriteContext";
 import Colors from "../../constants/Colors";
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
 const PlayerScreen = () => {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 
-  const { url } = route.params || {};
-  const { toggleFavorite, isFavorite } = useFavorites();
+  const { url: initialUrl, title: initialTitle } = route.params || {};
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [videoKey, setVideoKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isChangingChannel, setIsChangingChannel] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [showChannelList, setShowChannelList] = useState(true);
 
-  const { channels, refetch, loading: channelsLoading } = useM3uParse();
+  const { toggleFavorite, isFavorite } = useFavorites();
+  const { channels, refetch, loading: channelsLoading, error: m3uError } = useM3uParse();
   const scrollViewRef = useRef<ScrollView>(null);
-
-  const selectedChannel = useMemo(() =>
-    channels.find((c) => c.url === url), [channels, url]
-  );
-
-  const channelName = selectedChannel?.name || "Unknown Channel";
-  const channelHeaders = selectedChannel ? getChannelHeaders(selectedChannel) : {};
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   const isTablet = windowWidth >= 768;
+  const isLandscape = windowWidth > windowHeight;
+  const playerHeight = isLandscape && !isFullscreen ? windowHeight : undefined;
+  const playerAspectRatio = isLandscape && !isFullscreen ? undefined : 16 / 9;
+
+  const isUrlPlayable = useCallback((url: string): { playable: boolean; reason?: string } => {
+    if (!url) return { playable: false, reason: "URL kosong" };
+
+    const urlLower = url.toLowerCase();
+
+    if (urlLower.includes('raw.githubusercontent.com') || urlLower.includes('pastebin.com')) {
+      return { playable: false, reason: "URL ini adalah playlist, bukan stream video" };
+    }
+
+    const supportedFormats = ['.m3u8', '.mpd', '.ts', '.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv'];
+    const hasValidFormat = supportedFormats.some(format => urlLower.includes(format));
+
+    if (!hasValidFormat) {
+      return { playable: false, reason: "Format video tidak didukung" };
+    }
+
+    if (urlLower.includes('.mpd')) {
+      const channel = channels.find(c => c.url === url);
+      const isEncrypted = urlLower.includes('cenc') || urlLower.includes('/enc/');
+      if (isEncrypted && (!channel?.licenseType || !channel?.licenseKey)) {
+        return { playable: false, reason: "Stream DASH terenkripsi tidak dapat diputar" };
+      }
+      if (channel && (!channel.licenseType || !channel.licenseKey)) {
+        return { playable: false, reason: "Stream DASH memerlukan lisensi DRM" };
+      }
+    }
+    
+    try {
+      new URL(url);
+      return { playable: true };
+    } catch {
+      return { playable: false, reason: "URL tidak valid" };
+    }
+  }, [channels]);
+
+  useEffect(() => {
+    if (initialUrl && initialUrl !== currentUrl) {
+      const { playable, reason } = isUrlPlayable(initialUrl);
+      if (!playable) {
+        setUrlError(reason);
+        Toast.show({
+          type: "error",
+          text1: "Tidak Dapat Diputar",
+          text2: reason,
+          position: 'bottom',
+          visibilityTime: 3000,
+        });
+        return;
+      }
+
+      setUrlError(null);
+      setCurrentUrl(initialUrl);
+      setVideoKey(prev => prev + 1);
+      setIsChangingChannel(false);
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+
+      Toast.show({
+        type: "info",
+        text1: "Berganti Channel",
+        text2: initialTitle || "Channel",
+        position: 'bottom',
+        visibilityTime: 1500,
+      });
+    }
+  }, [initialUrl, initialTitle, currentUrl, isUrlPlayable]);
+
+  useEffect(() => {
+    if (!initialUrl) {
+      setUrlError("Tidak ada URL channel yang dipilih");
+      Toast.show({
+        type: "error",
+        text1: "Error",
+        text2: "Tidak ada URL channel yang dipilih",
+        position: 'bottom',
+        visibilityTime: 3000,
+      });
+      setTimeout(() => navigation.goBack(), 2000);
+    } else {
+      const { playable, reason } = isUrlPlayable(initialUrl);
+      if (!playable) setUrlError(reason);
+    }
+  }, []);
+
+  const validChannels = useMemo(() =>
+    channels.filter(channel => isValidVideoUrl(channel.url)), [channels]
+  );
+
+  const playableChannels = useMemo(() =>
+    validChannels.filter(c => {
+      if (c.isHLS) return true;
+      if (!c.isDASH && !c.isHLS) return true;
+      if (c.isDASH) {
+        const hasValidLicense = c.licenseType && c.licenseKey;
+        if (!hasValidLicense) return false;
+        try {
+          new URL(c.licenseKey!);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    }), [validChannels]
+  );
+
+  const selectedChannel = useMemo(() =>
+    playableChannels.find((c) => c.url === currentUrl), [playableChannels, currentUrl]
+  );
+
+  const channelName = selectedChannel?.name || initialTitle || "Unknown Channel";
+  const channelHeaders = selectedChannel ? getChannelHeaders(selectedChannel) : {};
 
   const manageOrientation = useCallback(async () => {
-    if (isFullscreen) {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_LEFT);
-      StatusBar.setHidden(true, 'fade');
-    } else {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-      StatusBar.setHidden(false, 'fade');
+    try {
+      if (isFullscreen) {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_LEFT);
+        StatusBar.setHidden(true, 'fade');
+      } else {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+        StatusBar.setHidden(false, 'fade');
+      }
+    } catch (error) {
+      console.log('Orientation error:', error);
     }
   }, [isFullscreen]);
 
   const configureUI = useCallback(() => {
-    navigation.setOptions({
-      headerShown: false,
-      tabBarStyle: isFullscreen
-        ? { display: 'none' }
-        : styles.tabBarStyle,
-    });
-  }, [isFullscreen, navigation]);
+    navigation.setOptions({ headerShown: false });
+  }, [navigation]);
 
   useEffect(() => {
     configureUI();
     manageOrientation();
-
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => { });
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
       StatusBar.setHidden(false, 'fade');
     };
   }, [isFullscreen, configureUI, manageOrientation]);
@@ -94,50 +209,154 @@ const PlayerScreen = () => {
   );
 
   const handleChannelChange = useCallback((newUrl: string) => {
-    if (newUrl === url) return;
-    setVideoKey(v => v + 1);
+    if (newUrl === currentUrl) return;
+
+    const { playable, reason } = isUrlPlayable(newUrl);
+    if (!playable) {
+      Toast.show({
+        type: "error",
+        text1: "Tidak Dapat Diputar",
+        text2: reason,
+        position: 'bottom',
+        visibilityTime: 2000,
+      });
+      return;
+    }
+
+    setIsChangingChannel(true);
+    setCurrentUrl(newUrl);
+    setVideoKey(prev => prev + 1);
+    setUrlError(null);
     navigation.setParams({ url: newUrl });
     scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-  }, [url, navigation]);
+
+    const newChannel = playableChannels.find(c => c.url === newUrl);
+    if (newChannel) {
+      Toast.show({
+        type: "info",
+        text1: "Berganti Channel",
+        text2: newChannel.name,
+        position: 'bottom',
+        visibilityTime: 1500,
+      });
+    }
+
+    setTimeout(() => setIsChangingChannel(false), 500);
+  }, [currentUrl, navigation, playableChannels, isUrlPlayable]);
 
   const handleToggleFavorite = useCallback(() => {
     if (!selectedChannel) return;
-    const isCurrentlyFav = isFavorite(url);
+    const isCurrentlyFav = isFavorite(currentUrl);
     toggleFavorite(selectedChannel);
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     Toast.show({
-      type: "success",
+      type: isCurrentlyFav ? "error" : "success",
       text1: isCurrentlyFav ? "Dihapus dari Favorit" : "Ditambah ke Favorit",
       text2: channelName,
       position: 'bottom',
       visibilityTime: 2000,
     });
-  }, [selectedChannel, isFavorite, url, toggleFavorite, channelName]);
+  }, [selectedChannel, isFavorite, currentUrl, toggleFavorite, channelName]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await refetch();
-    setIsRefreshing(false);
-  }, [refetch]);
+    try {
+      await refetch();
+      Toast.show({
+        type: "success",
+        text1: "Refresh Berhasil",
+        text2: `${playableChannels.length} channel tersedia`,
+        position: 'bottom',
+        visibilityTime: 1500,
+      });
+    } catch (error) {
+      Toast.show({
+        type: "error",
+        text1: "Refresh Gagal",
+        text2: "Periksa koneksi internet",
+        position: 'bottom',
+        visibilityTime: 2000,
+      });
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [refetch, playableChannels.length]);
+
+  const handleShareChannel = useCallback(() => {
+    if (!selectedChannel) return;
+    Alert.alert(
+      "Bagikan Channel",
+      `Nama: ${selectedChannel.name}\nGroup: ${selectedChannel.group || 'TV'}`,
+      [
+        { text: "Batal", style: "cancel" },
+        {
+          text: "Salin URL",
+          onPress: () => {
+            Toast.show({
+              type: "success",
+              text1: "URL Disalin",
+              position: 'bottom',
+              visibilityTime: 1500,
+            });
+          }
+        }
+      ]
+    );
+  }, [selectedChannel]);
+
+  const toggleChannelList = useCallback(() => {
+    setShowChannelList(prev => !prev);
+  }, []);
+
+  // Error states
+  if (urlError) {
+    return (
+      <View style={styles.centerContainer}>
+        <MaterialCommunityIcons name="video-off" size={64} color="#ff4444" />
+        <Text style={styles.errorText}>Stream Tidak Dapat Diputar</Text>
+        <Text style={styles.errorSubText}>{urlError}</Text>
+        <Text style={styles.errorSubTextSmall}>{currentUrl?.substring(0, 80)}...</Text>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Text style={styles.backButtonText}>Kembali ke Daftar</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (!initialUrl && !currentUrl) {
+    return (
+      <View style={styles.centerContainer}>
+        <MaterialCommunityIcons name="alert-circle" size={64} color="#ff4444" />
+        <Text style={styles.errorText}>Tidak ada channel yang dipilih</Text>
+        <Text style={styles.errorSubText}>Silakan pilih channel dari daftar</Text>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Text style={styles.backButtonText}>Kembali</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   if (channelsLoading && channels.length === 0) {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color={Colors.primary} />
         <Text style={styles.loadingText}>Memuat daftar channel...</Text>
+        <Text style={styles.loadingSubText}>Mohon tunggu sebentar</Text>
       </View>
     );
   }
 
-  if (!selectedChannel && !channelsLoading) {
+  if (m3uError && channels.length === 0) {
     return (
       <View style={styles.centerContainer}>
-        <MaterialCommunityIcons name="television-off" size={64} color="#444" />
-        <Text style={styles.errorText}>Channel tidak ditemukan</Text>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
-          <Text style={styles.backButtonText}>Kembali</Text>
+        <MaterialCommunityIcons name="wifi-off" size={64} color="#444" />
+        <Text style={styles.errorText}>Gagal Memuat Channel</Text>
+        <Text style={styles.errorSubText}>{m3uError}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={handleRefresh}>
+          <Text style={styles.retryButtonText}>Coba Lagi</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.backButton, { marginTop: 12, backgroundColor: '#333' }]} onPress={() => navigation.goBack()}>
+          <Text style={[styles.backButtonText, { color: '#fff' }]}>Kembali</Text>
         </TouchableOpacity>
       </View>
     );
@@ -175,12 +394,15 @@ const PlayerScreen = () => {
           ) : undefined
         }
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
-        <View style={isFullscreen ? styles.playerFullscreen : styles.playerPortrait}>
+        <View style={[
+          isFullscreen ? styles.playerFullscreen : styles.playerPortrait,
+          playerHeight && { height: playerHeight },
+          playerAspectRatio && { aspectRatio: playerAspectRatio }
+        ]}>
           <VideoPlayer
-            key={videoKey > 0 ? `${url}-${videoKey}` : url}
-            url={url}
+            key={`${currentUrl}-${videoKey}`}
+            url={currentUrl}
             isFullscreen={isFullscreen}
             onFullscreenChange={setIsFullscreen}
             title={channelName}
@@ -198,48 +420,71 @@ const PlayerScreen = () => {
             <ChannelInfoCard
               channelName={channelName}
               group={selectedChannel?.group}
-              isFavorite={isFavorite(url)}
+              isFavorite={isFavorite(currentUrl)}
               onToggleFavorite={handleToggleFavorite}
+              onShare={handleShareChannel}
               isTablet={isTablet}
               titleFontSize={titleFontSize}
               cardPadding={cardPadding}
             />
 
             <Section
-              icon="calendar-clock"
-              title="EPG / Jadwal"
-              rightElement={null}
+              icon="format-list-bulleted"
+              title="Daftar Channel"
+              rightElement={
+                <TouchableOpacity onPress={toggleChannelList} style={styles.toggleButton}>
+                  <Text style={styles.toggleButtonText}>
+                    {showChannelList ? 'Sembunyikan' : 'Tampilkan'}
+                  </Text>
+                  <Ionicons 
+                    name={showChannelList ? "chevron-up" : "chevron-down"} 
+                    size={16} 
+                    color={Colors.primary} 
+                  />
+                </TouchableOpacity>
+              }
               isTablet={isTablet}
             >
-              <EPGInfo tvgId={selectedChannel?.tvgId} channelName={channelName} />
+              {showChannelList && (
+                <>
+                  <View style={styles.totalContainer}>
+                    <Text style={[styles.countText, isTablet && styles.tabletCountText]}>
+                      {playableChannels.length} Channel Tersedia
+                    </Text>
+                  </View>
+                  <ChannelList
+                    channels={playableChannels}
+                    currentChannelUrl={currentUrl}
+                    onChannelSelect={handleChannelChange}
+                  />
+                </>
+              )}
             </Section>
-
-            <ChannelList
-              channels={channels}
-              currentChannelUrl={url}
-              onChannelSelect={handleChannelChange}
-            />
           </View>
         )}
       </ScrollView>
 
       {!isFullscreen && (
-        <View style={[
-          styles.bottomSpacer,
-          {
-            height: insets.bottom + (isTablet ? 80 : 70),
-          }
-        ]} />
+        <View style={[styles.bottomSpacer, { height: insets.bottom + (isTablet ? 80 : 70) }]} />
+      )}
+
+      {isChangingChannel && (
+        <View style={styles.changingOverlay}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.changingText}>Mengganti channel...</Text>
+        </View>
       )}
     </View>
   );
 };
 
+// ChannelInfoCard Component
 interface ChannelInfoCardProps {
   channelName: string;
   group?: string;
   isFavorite: boolean;
   onToggleFavorite: () => void;
+  onShare: () => void;
   isTablet?: boolean;
   titleFontSize?: number;
   cardPadding?: number;
@@ -250,6 +495,7 @@ const ChannelInfoCard: React.FC<ChannelInfoCardProps> = React.memo(({
   group,
   isFavorite,
   onToggleFavorite,
+  onShare,
   isTablet,
   titleFontSize,
   cardPadding
@@ -267,6 +513,7 @@ const ChannelInfoCard: React.FC<ChannelInfoCardProps> = React.memo(({
       ]} numberOfLines={isTablet ? 3 : 2}>
         {channelName}
       </Text>
+
       <View style={styles.badgeContainer}>
         <View style={styles.badge}>
           <Text style={[styles.badgeText, isTablet && styles.tabletBadgeText]}>
@@ -282,20 +529,18 @@ const ChannelInfoCard: React.FC<ChannelInfoCardProps> = React.memo(({
       </View>
     </View>
 
-    <TouchableOpacity
-      onPress={onToggleFavorite}
-      style={[styles.favBtn, isTablet && styles.tabletFavBtn]}
-      activeOpacity={0.7}
-    >
-      <Ionicons
-        name={isFavorite ? "heart" : "heart-outline"}
-        size={isTablet ? 32 : 26}
-        color={isFavorite ? "#ff4444" : "#fff"}
-      />
-    </TouchableOpacity>
+    <View style={styles.actionButtons}>
+      <TouchableOpacity onPress={onShare} style={[styles.actionBtn, isTablet && styles.tabletActionBtn]} activeOpacity={0.7}>
+        <Ionicons name="share-outline" size={isTablet ? 24 : 20} color="#fff" />
+      </TouchableOpacity>
+      <TouchableOpacity onPress={onToggleFavorite} style={[styles.actionBtn, isTablet && styles.tabletActionBtn, isFavorite && styles.favBtnActive]} activeOpacity={0.7}>
+        <Ionicons name={isFavorite ? "heart" : "heart-outline"} size={isTablet ? 24 : 20} color={isFavorite ? "#ff4444" : "#fff"} />
+      </TouchableOpacity>
+    </View>
   </View>
 ));
 
+// Section Component
 interface SectionProps {
   icon: string;
   title: string;
@@ -314,11 +559,7 @@ const Section: React.FC<SectionProps> = React.memo(({
   <View style={[styles.section, isTablet && styles.tabletSection]}>
     <View style={[styles.sectionHeader, isTablet && styles.tabletSectionHeader]}>
       <View style={[styles.iconBox, isTablet && styles.tabletIconBox]}>
-        <MaterialCommunityIcons
-          name={icon as any}
-          size={isTablet ? 22 : 18}
-          color={Colors.primary}
-        />
+        <MaterialCommunityIcons name={icon as any} size={isTablet ? 22 : 18} color={Colors.primary} />
       </View>
       <Text style={[styles.sectionTitle, isTablet && styles.tabletSectionTitle]}>
         {title}
@@ -364,24 +605,54 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
   },
+  loadingSubText: {
+    color: '#666',
+    marginTop: 4,
+    fontSize: 12,
+  },
   errorText: {
-    color: '#888',
+    color: '#ff4444',
     marginTop: 12,
-    fontSize: 14,
-    marginBottom: 20,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  errorSubText: {
+    color: '#888',
+    marginTop: 8,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  errorSubTextSmall: {
+    color: '#666',
+    marginTop: 8,
+    fontSize: 10,
+    textAlign: 'center',
   },
   backButton: {
     backgroundColor: Colors.primary,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
+    marginTop: 20,
   },
   backButtonText: {
     color: '#000',
     fontWeight: 'bold',
   },
+  retryButton: {
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  retryButtonText: {
+    color: Colors.primary,
+    fontWeight: 'bold',
+  },
   playerPortrait: {
-    aspectRatio: 16 / 9,
     width: '100%',
     backgroundColor: '#000',
   },
@@ -425,14 +696,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
+    gap: 8,
   },
   badge: {
     backgroundColor: '#1a1a1a',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
-    marginRight: 10,
-    marginBottom: 4,
   },
   badgeText: {
     color: '#888',
@@ -451,7 +721,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
-    marginBottom: 4,
   },
   dot: {
     width: 6,
@@ -466,18 +735,25 @@ const styles = StyleSheet.create({
   tabletLiveText: {
     fontSize: 12,
   },
-  favBtn: {
-    width: 50,
-    height: 50,
-    borderRadius: 15,
+  actionButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#1a1a1a',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  tabletFavBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 20,
+  tabletActionBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+  },
+  favBtnActive: {
+    backgroundColor: 'rgba(255, 68, 68, 0.2)',
   },
   section: {
     marginBottom: 30,
@@ -521,8 +797,8 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   totalContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 4,
   },
   countText: {
     color: '#666',
@@ -532,14 +808,38 @@ const styles = StyleSheet.create({
   tabletCountText: {
     fontSize: 14,
   },
+  toggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  toggleButtonText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: '500',
+  },
   bottomSpacer: {
     backgroundColor: '#000',
   },
-  tabBarStyle: {
-    backgroundColor: "#0a0a0a",
-    borderTopColor: "#222",
-    height: Platform.OS === 'ios' ? 90 : 70,
-    paddingBottom: Platform.OS === 'ios' ? 25 : 12,
+  changingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  changingText: {
+    color: '#fff',
+    marginTop: 12,
+    fontSize: 14,
   },
 });
 

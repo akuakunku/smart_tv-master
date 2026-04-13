@@ -33,7 +33,6 @@ import FavoriteScreen from "./FavoriteScreen";
 const ProfileScreen = React.lazy(() => import('./ProfileScreen'));
 const EditUrl = React.lazy(() => import('./EditUrl'));
 const SearchScreen = React.lazy(() => import('./SearchScreen'));
-const EditEpg = React.lazy(() => import('./EditEpg'));
 
 export const userUpdateEmitter = new EventEmitter();
 
@@ -178,7 +177,7 @@ const CustomDrawerContent = React.memo(({ state, navigation, descriptors }: Cust
 
   // PERBAIKAN: Filter drawer items yang valid
   const drawerItems = useMemo(() => {
-    const validRoutes = ['Home', 'FavoriteScreen', 'SearchScreen', 'EditUrl', 'EditEpg'];
+    const validRoutes = ['Home', 'FavoriteScreen', 'SearchScreen', 'EditUrl'];
 
     return state.routes
       .filter((route: any) => validRoutes.includes(route.name))
@@ -205,10 +204,6 @@ const CustomDrawerContent = React.memo(({ state, navigation, descriptors }: Cust
           case 'EditUrl':
             iconName = 'link-outline';
             displayName = 'Kelola M3U';
-            break;
-          case 'EditEpg':
-            iconName = 'list-outline';
-            displayName = 'Kelola EPG';
             break;
         }
 
@@ -350,14 +345,7 @@ function DrawerNavigator() {
           drawerIcon: (p) => <Ionicons name="link-outline" {...p} />
         }}
       />
-      <Drawer.Screen
-        name="EditEpg"
-        component={EditEpg}
-        options={{
-          title: 'Kelola EPG',
-          drawerIcon: (p) => <Ionicons name="list-outline" {...p} />
-        }}
-      />
+     
     </Drawer.Navigator>
   );
 }

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios, { CancelTokenSource } from "axios";
 
-// --- Interfaces ---
 export interface Channel {
   tvgId: string | null;
   tvgName: string | null;
@@ -15,6 +14,22 @@ export interface Channel {
   origin?: string | null;
   licenseType?: string | null;
   licenseKey?: string | null;
+  audioTrack?: string | null;
+  httpHeaders?: Record<string, string> | null;
+  catchupSource?: string | null;
+  catchupId?: string | null;
+  timeshift?: string | null;
+  isDASH: boolean;
+  isHLS: boolean;
+  isEncrypted: boolean;
+  kodiprops?: Record<string, string>;
+}
+
+export interface M3uParseResult {
+  channels: Channel[];
+  groups: string[];
+  totalDuration?: number;
+  hasCatchup: boolean;
 }
 
 export const getChannelHeaders = (channel: Channel) => {
@@ -30,24 +45,131 @@ export const getChannelHeaders = (channel: Channel) => {
     headers['Origin'] = channel.origin;
   }
 
+  if (channel.httpHeaders) {
+    Object.assign(headers, channel.httpHeaders);
+  }
+
   return headers;
+};
+
+export const isValidLicenseUrl = (licenseKey: string | null | undefined): boolean => {
+  if (!licenseKey) return false;
+  try {
+    const url = new URL(licenseKey);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+export const isPlaylistUrl = (url: string): boolean => {
+  const urlLower = url.toLowerCase();
+  
+  if (urlLower.endsWith('.m3u') || urlLower.endsWith('.m3u8')) {
+    if (urlLower.includes('raw.githubusercontent.com') || 
+        urlLower.includes('pastebin.com') ||
+        urlLower.includes('gist.github.com')) {
+      return true;
+    }
+    
+    if (urlLower.includes('playlist') || 
+        urlLower.includes('channel') ||
+        urlLower.includes('list')) {
+      return true;
+    }
+  }
+  
+  return false;
+};
+
+export const isEncryptedStream = (url: string): boolean => {
+  const urlLower = url.toLowerCase();
+  return urlLower.includes('cenc') || 
+         urlLower.includes('/enc/') ||
+         urlLower.includes('encrypted') ||
+         urlLower.includes('widevine') ||
+         urlLower.includes('clearkey');
+};
+
+export const isChannelPlayable = (channel: Channel): boolean => {
+  if (channel.isHLS) return true;
+  if (!channel.isDASH && !channel.isHLS) return true;
+  
+  if (channel.isDASH) {
+    if (channel.isEncrypted) {
+      const hasLicense = channel.licenseType && channel.licenseKey;
+      if (!hasLicense) {
+        console.log(`⚠️ [M3U] Encrypted DASH without license, skipping: ${channel.name}`);
+        return false;
+      }
+      if (!isValidLicenseUrl(channel.licenseKey)) {
+        console.log(`⚠️ [M3U] Invalid license URL for encrypted DASH: ${channel.name}`);
+        return false;
+      }
+      return true;
+    }
+    
+    const hasLicense = channel.licenseType && channel.licenseKey;
+    if (!hasLicense) {
+      console.log(`⚠️ [M3U] DASH without license, skipping: ${channel.name}`);
+      return false;
+    }
+    
+    return isValidLicenseUrl(channel.licenseKey);
+  }
+  
+  return true;
+};
+
+export const isValidStreamUrl = (url: string): boolean => {
+  if (!url || url.length < 10) return false;
+  if (url.includes('///')) return false;
+  
+  if (isPlaylistUrl(url)) {
+    console.log(`⚠️ [M3U] Skipping playlist URL: ${url.substring(0, 80)}`);
+    return false;
+  }
+  
+  if (url.includes('raw.githubusercontent.com')) return false;
+  if (url.includes('pastebin.com')) return false;
+  
+  const urlLower = url.toLowerCase();
+  const hasValidFormat = urlLower.includes('.m3u8') || 
+                         urlLower.includes('.mpd') || 
+                         urlLower.includes('.mp4') || 
+                         urlLower.includes('.ts') ||
+                         urlLower.includes('.mkv') ||
+                         urlLower.includes('.webm') ||
+                         urlLower.includes('.flv');
+  
+  if (!hasValidFormat) return false;
+  
+  try {
+    const urlObj = new URL(url.split('|')[0]);
+    return urlObj.protocol === 'http:' || urlObj.protocol === 'https:' ||
+           urlObj.protocol === 'rtmp:' || urlObj.protocol === 'rtsp:';
+  } catch {
+    return false;
+  }
 };
 
 interface CacheData {
   channels: Channel[];
   groups: string[];
   timestamp: number;
+  version: number;
 }
 
 const DEFAULT_M3U_URLS = [
-  { name: "Default", url: "https://pastebin.com/raw/4zUPUCVr", enabled: false },
-  { name: "Backup 1", url: "https://raw.githubusercontent.com/eradigitaltv2025/ERADIGITALTV/refs/heads/main/MONTOKTV", enabled: true },
+  { name: "Backup", url: "https://raw.githubusercontent.com/chesko21/tv-online-m3u/refs/heads/my-repo/Playlist.m3u", enabled: true },
+  { name: "Backup1", url: "https://raw.githubusercontent.com/mimipipi22/lalajo/refs/heads/main/playlist25", enabled: false }
 ];
 
 const CACHE_KEY = "m3u_channels_cache";
 const USER_M3U_URLS_KEY = "user_m3u_urls";
 const ACTIVE_URL_KEY = "active_m3u_url";
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const CACHE_VERSION = 3;
 
 const useM3uParse = () => {
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -64,18 +186,78 @@ const useM3uParse = () => {
   const isValidUrl = useCallback((url: string): boolean => {
     try {
       const urlObj = new URL(url);
-      return urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
+      return urlObj.protocol === 'http:' || urlObj.protocol === 'https:' ||
+        urlObj.protocol === 'rtmp:' || urlObj.protocol === 'rtsp:';
     } catch {
       return false;
     }
   }, []);
 
-  const parseM3uBody = useCallback((data: string): Channel[] => {
+  const parseExtinfAttributes = useCallback((line: string): Record<string, string> => {
+    const attributes: Record<string, string> = {};
+    const quotedPattern = /([a-zA-Z0-9_-]+)="([^"]*)"/g;
+    let match;
+
+    while ((match = quotedPattern.exec(line)) !== null) {
+      attributes[match[1]] = match[2];
+    }
+
+    const unquotedPattern = /([a-zA-Z0-9_-]+)=([^,"\s]+)/g;
+    while ((match = unquotedPattern.exec(line)) !== null) {
+      if (!attributes[match[1]]) {
+        attributes[match[1]] = match[2];
+      }
+    }
+
+    return attributes;
+  }, []);
+
+  const cleanChannelName = useCallback((name: string): string => {
+    let cleaned = name
+      .replace(/[^\x20-\x7E]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!cleaned || cleaned.length === 0) {
+      cleaned = "Unknown Channel";
+    }
+
+    return cleaned;
+  }, []);
+
+  const parseUrlParameters = useCallback((urlWithParams: string): {
+    cleanUrl: string;
+    params: URLSearchParams;
+  } => {
+    if (urlWithParams.includes('|')) {
+      const parts = urlWithParams.split('|');
+      const cleanUrl = parts[0].trim();
+      const paramsString = parts[1];
+      const params = new URLSearchParams(paramsString);
+      return { cleanUrl, params };
+    }
+    return { cleanUrl: urlWithParams, params: new URLSearchParams() };
+  }, []);
+
+  const detectStreamType = useCallback((url: string): { isDASH: boolean; isHLS: boolean; isEncrypted: boolean } => {
+    const lowerUrl = url.toLowerCase();
+    return {
+      isDASH: lowerUrl.includes('.mpd') || lowerUrl.includes('manifest.mpd'),
+      isHLS: lowerUrl.includes('.m3u8') || lowerUrl.includes('index.m3u8'),
+      isEncrypted: isEncryptedStream(url)
+    };
+  }, []);
+
+  const parseM3uBody = useCallback((data: string): M3uParseResult => {
     const lines = data.split(/\r?\n/);
     const result: Channel[] = [];
     let currentMeta: Partial<Channel> | null = null;
+    let currentKodiprops: Record<string, string> = {};
     let pendingLicenseType: string | null = null;
     let pendingLicenseKey: string | null = null;
+    let pendingAudioTrack: string | null = null;
+    let totalDuration = 0;
+    let hasCatchup = false;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -87,71 +269,124 @@ const useM3uParse = () => {
           const key = kodipropMatch[1].trim();
           const value = kodipropMatch[2].trim();
 
-          if (key === 'inputstream.adaptive.license_type') {
-            pendingLicenseType = value;
-          } else if (key === 'inputstream.adaptive.license_key') {
-            pendingLicenseKey = value;
+          currentKodiprops[key] = value;
+
+          switch (key) {
+            case 'inputstream.adaptive.license_type':
+              pendingLicenseType = value;
+              break;
+            case 'inputstream.adaptive.license_key':
+              pendingLicenseKey = value;
+              break;
+            case 'inputstream.adaptive.audio_track':
+              pendingAudioTrack = value;
+              break;
           }
         }
+        continue;
+      }
+      
+      if (line === "#EXTM3U") {
         continue;
       }
 
       if (line.startsWith("#EXTINF:")) {
-        const tvgIdMatch = line.match(/tvg-id=["']?([^"'\s,]+)["']?/i);
-        const tvgNameMatch = line.match(/tvg-name=["']?([^"']*)["']?/i);
-        const logoMatch = line.match(/tvg-logo=["']?([^"']*)["']?/i);
-        const groupMatch = line.match(/group-title=["']?([^"']*)["']?/i);
-
-        const info: Partial<Channel> = {
-          tvgId: tvgIdMatch?.[1] || null,
-          tvgName: tvgNameMatch?.[1] || null,
-          logo: logoMatch?.[1] || null,
-          group: groupMatch?.[1] || "Lainnya",
-        };
-
-        const lastCommaIndex = line.lastIndexOf(",");
-        info.name = lastCommaIndex !== -1 ? line.substring(lastCommaIndex + 1).trim() : "Unknown Channel";
-
-        if (info.name) {
-          info.name = info.name.replace(/[^\x20-\x7E]/g, '').trim();
-          if (!info.name) info.name = "Unknown Channel";
+        const durationMatch = line.match(/#EXTINF:([\d\.\-]+)/);
+        if (durationMatch) {
+          const duration = parseFloat(durationMatch[1]);
+          if (duration > 0) totalDuration += duration;
         }
 
-        currentMeta = info;
+        const attributes = parseExtinfAttributes(line);
+
+        let group = attributes['group-title'] || "Lainnya";
+        if (!group && attributes['group']) group = attributes['group'];
+        if (!group && attributes['group_name']) group = attributes['group_name'];
+
+        const lastCommaIndex = line.lastIndexOf(",");
+        let channelName = lastCommaIndex !== -1 ? line.substring(lastCommaIndex + 1).trim() : "Unknown Channel";
+        channelName = cleanChannelName(channelName);
+
+        const catchupSource = attributes['catchup-source'] || null;
+        const catchupId = attributes['catchup-id'] || null;
+        const timeshift = attributes['timeshift'] || null;
+
+        if (catchupSource || catchupId) hasCatchup = true;
+
+        currentMeta = {
+          tvgId: attributes['tvg-id'] || attributes['tvg_id'] || null,
+          tvgName: attributes['tvg-name'] || attributes['tvg_name'] || channelName,
+          name: channelName,
+          logo: attributes['tvg-logo'] || attributes['tvg_logo'] || null,
+          group: group,
+          catchupSource: catchupSource,
+          catchupId: catchupId,
+          timeshift: timeshift,
+          userAgent: "VLC/3.0.11 LibVLC/3.0.11",
+          referrer: null,
+          origin: null,
+          kodiprops: { ...currentKodiprops }
+        };
+
         continue;
       }
-      
-      if (line.match(/^(https?:\/\/|rtsp:\/\/|rtmp:\/\/)/i)) {
+
+      const urlMatch = line.match(/^(https?:\/\/|rtsp:\/\/|rtmp:\/\/)/i);
+      if (urlMatch || (currentMeta && (line.includes('.mpd') || line.includes('.m3u8')))) {
         if (currentMeta) {
           let streamUrl = line;
-          let userAgent = "VLC/3.0.11 LibVLC/3.0.11";
-          let referrer = null;
-          let origin = null;
+          let userAgent = currentMeta.userAgent || "VLC/3.0.11 LibVLC/3.0.11";
+          let referrer = currentMeta.referrer || null;
+          let origin = currentMeta.origin || null;
           let licenseType = pendingLicenseType;
           let licenseKey = pendingLicenseKey;
+          let audioTrack = pendingAudioTrack;
+          let httpHeaders: Record<string, string> | null = null;
 
-          if (streamUrl.includes("|")) {
-            const parts = streamUrl.split("|");
-            streamUrl = parts[0].trim();
-            const paramsPart = parts[1];
+          const { cleanUrl, params } = parseUrlParameters(streamUrl);
+          streamUrl = cleanUrl;
 
-            const uaMatch = paramsPart.match(/User-Agent=([^&]*)/i);
-            if (uaMatch) userAgent = decodeURIComponent(uaMatch[1]);
+          const uaMatch = params.get('User-Agent');
+          if (uaMatch) userAgent = decodeURIComponent(uaMatch);
 
-            const refMatch = paramsPart.match(/Referer=([^&]*)/i);
-            if (refMatch) referrer = decodeURIComponent(refMatch[1]);
+          const refMatch = params.get('Referer');
+          if (refMatch) referrer = decodeURIComponent(refMatch);
 
-            const originMatch = paramsPart.match(/Origin=([^&]*)/i);
-            if (originMatch) origin = decodeURIComponent(originMatch[1]);
+          const originMatch = params.get('Origin');
+          if (originMatch) origin = decodeURIComponent(originMatch);
 
-            const licTypeMatch = paramsPart.match(/license_type=([^&]*)/i);
-            if (licTypeMatch) licenseType = licTypeMatch[1];
+          const licTypeMatch = params.get('license_type');
+          if (licTypeMatch) licenseType = licTypeMatch;
 
-            const licKeyMatch = paramsPart.match(/license_key=([^&]*)/i);
-            if (licKeyMatch) licenseKey = decodeURIComponent(licKeyMatch[1]);
+          const licKeyMatch = params.get('license_key');
+          if (licKeyMatch) licenseKey = decodeURIComponent(licKeyMatch);
+
+          if (licenseKey && licenseKey.includes('clearkey-base64-2-hex-json.herokuapp.com')) {
+            licenseType = 'clearkey';
           }
 
-          result.push({
+          httpHeaders = {};
+          for (const [key, value] of params.entries()) {
+            const lowerKey = key.toLowerCase();
+            if (lowerKey !== 'user-agent' &&
+              lowerKey !== 'referer' &&
+              lowerKey !== 'origin' &&
+              lowerKey !== 'license_type' &&
+              lowerKey !== 'license_key') {
+              httpHeaders[key] = decodeURIComponent(value);
+            }
+          }
+
+          const { isDASH, isHLS, isEncrypted } = detectStreamType(streamUrl);
+
+          if (!licenseType && currentKodiprops['inputstream.adaptive.license_type']) {
+            licenseType = currentKodiprops['inputstream.adaptive.license_type'];
+          }
+          if (!licenseKey && currentKodiprops['inputstream.adaptive.license_key']) {
+            licenseKey = currentKodiprops['inputstream.adaptive.license_key'];
+          }
+
+          const channelToAdd = {
             ...(currentMeta as Channel),
             url: streamUrl,
             userAgent,
@@ -159,11 +394,25 @@ const useM3uParse = () => {
             origin,
             licenseType: licenseType || null,
             licenseKey: licenseKey || null,
-          });
-          
+            audioTrack: audioTrack || null,
+            httpHeaders: Object.keys(httpHeaders || {}).length ? httpHeaders! : null,
+            isDASH,
+            isHLS,
+            isEncrypted,
+            kodiprops: Object.keys(currentKodiprops).length ? currentKodiprops : undefined,
+          };
+
+          if (isValidStreamUrl(streamUrl) && isChannelPlayable(channelToAdd)) {
+            result.push(channelToAdd);
+          } else {
+            console.log(`⚠️ [M3U] Skipping unplayable channel: ${currentMeta.name}`);
+          }
+
           currentMeta = null;
+          currentKodiprops = {};
           pendingLicenseType = null;
           pendingLicenseKey = null;
+          pendingAudioTrack = null;
         }
       }
     }
@@ -172,33 +421,51 @@ const useM3uParse = () => {
       index === self.findIndex(c => c.url === channel.url)
     );
 
-    return uniqueResults;
-  }, []);
+    uniqueResults.sort((a, b) => a.name.localeCompare(b.name));
 
-  const loadCache = useCallback(async (): Promise<{ channels: Channel[]; groups: string[] } | null> => {
+    const uniqueGroups = Array.from(new Set(uniqueResults.map(ch => ch.group || "Lainnya"))).sort();
+
+    return {
+      channels: uniqueResults,
+      groups: uniqueGroups,
+      totalDuration: totalDuration > 0 ? totalDuration : undefined,
+      hasCatchup: hasCatchup
+    };
+  }, [parseExtinfAttributes, cleanChannelName, parseUrlParameters, detectStreamType]);
+
+  const loadCache = useCallback(async (): Promise<M3uParseResult | null> => {
     try {
       const cached = await AsyncStorage.getItem(CACHE_KEY);
       if (cached) {
         const cacheData: CacheData = JSON.parse(cached);
-        if (Date.now() - cacheData.timestamp < CACHE_EXPIRY_MS) {
-          return { channels: cacheData.channels, groups: cacheData.groups };
+        if (cacheData.version === CACHE_VERSION &&
+          Date.now() - cacheData.timestamp < CACHE_EXPIRY_MS) {
+          return {
+            channels: cacheData.channels,
+            groups: cacheData.groups,
+            hasCatchup: cacheData.channels.some(c => c.catchupSource || c.catchupId)
+          };
         }
       }
       return null;
     } catch (e) {
+      console.warn("Failed to load cache:", e);
       return null;
     }
   }, []);
 
-  const saveCache = useCallback(async (channelsData: Channel[], groupsData: string[]) => {
+  const saveCache = useCallback(async (parseResult: M3uParseResult) => {
     try {
       const cacheData: CacheData = {
-        channels: channelsData,
-        groups: groupsData,
+        channels: parseResult.channels,
+        groups: parseResult.groups,
         timestamp: Date.now(),
+        version: CACHE_VERSION,
       };
       await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
-    } catch (e) {}
+    } catch (e) {
+      console.warn("Failed to save cache:", e);
+    }
   }, []);
 
   const loadUserUrls = useCallback(async () => {
@@ -211,6 +478,7 @@ const useM3uParse = () => {
         }
       }
     } catch (e) {
+      console.warn("Failed to load user URLs:", e);
       if (isMountedRef.current) setUserUrls([]);
     }
   }, []);
@@ -242,40 +510,54 @@ const useM3uParse = () => {
         throw new Error("URL M3U tidak valid");
       }
 
+      console.log(`Fetching M3U from: ${activeUrl}`);
+
       const response = await axios.get(activeUrl, {
-        timeout: 20000,
+        timeout: 30000,
         headers: {
           'Accept': '*/*',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cache-Control': 'no-cache',
         },
         cancelToken: cancelTokenRef.current.token,
       });
 
-      const parsedChannels = parseM3uBody(response.data);
+      if (!response.data || typeof response.data !== 'string') {
+        throw new Error("Invalid M3U response format");
+      }
 
-      if (parsedChannels.length > 0) {
-        const uniqueGroups = Array.from(new Set(parsedChannels.map(ch => ch.group || "Lainnya"))).sort();
+      const parseResult = parseM3uBody(response.data);
 
+      if (parseResult.channels.length > 0) {
         if (isMountedRef.current) {
-          setChannels(parsedChannels);
-          setGroups(uniqueGroups);
+          setChannels(parseResult.channels);
+          setGroups(parseResult.groups);
           setError(null);
-        }
 
-        await saveCache(parsedChannels, uniqueGroups);
+          const dashCount = parseResult.channels.filter(c => c.isDASH).length;
+          const hlsCount = parseResult.channels.filter(c => c.isHLS).length;
+          const encryptedCount = parseResult.channels.filter(c => c.isEncrypted).length;
+          console.log(`Parsed ${parseResult.channels.length} channels (DASH: ${dashCount}, HLS: ${hlsCount}, Encrypted: ${encryptedCount})`);
+        }
+        await saveCache(parseResult);
       } else {
         throw new Error("M3U Kosong atau Format Salah");
       }
 
     } catch (err: any) {
-      if (axios.isCancel(err)) return;
+      if (axios.isCancel(err)) {
+        console.log("Request cancelled");
+        return;
+      }
+
+      console.error("Fetch error:", err.message);
 
       const cached = await loadCache();
       if (cached && cached.channels.length > 0) {
         if (isMountedRef.current) {
           setChannels(cached.channels);
           setGroups(cached.groups);
-          setError("Gagal memuat URL terbaru. Menampilkan data cache.");
+          setError(`⚠️ Gagal memuat data terbaru: ${err.message}. Menampilkan data cache.`);
         }
       } else {
         if (isMountedRef.current) {
@@ -293,6 +575,15 @@ const useM3uParse = () => {
       cancelTokenRef.current = null;
     }
   }, [parseM3uBody, isValidUrl, saveCache, loadCache]);
+
+  const getLicenseConfig = useCallback((channel: Channel) => {
+    if (!channel.licenseType || !channel.licenseKey) return null;
+    return {
+      licenseType: channel.licenseType,
+      licenseKey: channel.licenseKey,
+      headers: getChannelHeaders(channel)
+    };
+  }, []);
 
   const changeActiveUrl = useCallback(async (url: string) => {
     if (!isValidUrl(url)) {
@@ -312,6 +603,7 @@ const useM3uParse = () => {
       await fetchM3u(url);
       return true;
     } catch (e) {
+      console.error("Failed to change URL:", e);
       if (isMountedRef.current) setError("Gagal berpindah playlist");
       return false;
     }
@@ -332,8 +624,10 @@ const useM3uParse = () => {
         if (isMountedRef.current) setUserUrls(newList);
         return true;
       }
+      setError("URL sudah ada dalam daftar");
       return false;
     } catch (e) {
+      console.error("Failed to add URL:", e);
       setError("Gagal menambah URL");
       return false;
     }
@@ -350,18 +644,26 @@ const useM3uParse = () => {
         const defaultUrl = DEFAULT_M3U_URLS.find(u => u.enabled)?.url || DEFAULT_M3U_URLS[0].url;
         await changeActiveUrl(defaultUrl);
       }
+      return true;
     } catch (e) {
+      console.error("Failed to delete URL:", e);
       setError("Gagal menghapus URL");
+      return false;
     }
   }, [userUrls, changeActiveUrl]);
 
   const refetch = useCallback(() => fetchM3u(), [fetchM3u]);
+
   const clearCache = useCallback(async () => {
     try {
       await AsyncStorage.removeItem(CACHE_KEY);
-      setError("Cache berhasil dibersihkan");
+      setError("✅ Cache berhasil dibersihkan");
+      setTimeout(() => setError(null), 3000);
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      console.error("Failed to clear cache:", e);
+      return false;
+    }
   }, []);
 
   const searchChannels = useCallback((query: string) => {
@@ -369,14 +671,25 @@ const useM3uParse = () => {
     const lowerQuery = query.toLowerCase();
     return channels.filter(c =>
       c.name.toLowerCase().includes(lowerQuery) ||
+      (c.tvgName && c.tvgName.toLowerCase().includes(lowerQuery)) ||
       (c.group && c.group.toLowerCase().includes(lowerQuery))
     );
   }, [channels]);
 
-  const getChannelsByGroup = useCallback((group: string) => channels.filter(c => c.group === group), [channels]);
-  const getChannelByUrl = useCallback((url: string) => channels.find(c => c.url === url), [channels]);
+  const getChannelsByGroup = useCallback((group: string) =>
+    channels.filter(c => c.group === group),
+    [channels]);
+
+  const getChannelByUrl = useCallback((url: string) =>
+    channels.find(c => c.url === url),
+    [channels]);
+
   const getTotalChannels = useCallback(() => channels.length, [channels]);
   const getGroupsCount = useCallback(() => groups.length, [groups]);
+
+  const getDASHChannels = useCallback(() => channels.filter(c => c.isDASH), [channels]);
+  const getHLSChannels = useCallback(() => channels.filter(c => c.isHLS), [channels]);
+  const getEncryptedChannels = useCallback(() => channels.filter(c => c.isEncrypted), [channels]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -385,17 +698,38 @@ const useM3uParse = () => {
       await fetchM3u();
     };
     init();
+
     return () => {
       isMountedRef.current = false;
-      if (cancelTokenRef.current) cancelTokenRef.current.cancel("Component unmounted");
+      if (cancelTokenRef.current) {
+        cancelTokenRef.current.cancel("Component unmounted");
+      }
     };
   }, []);
 
   return {
-    channels, groups, loading, error, isFetching, refetch, addUrl, deleteUrl,
-    userUrls, changeActiveUrl, defaultUrls: DEFAULT_M3U_URLS, clearCache,
-    searchChannels, getChannelsByGroup, getChannelByUrl, getTotalChannels,
-    getGroupsCount, isValidUrl,
+    channels,
+    groups,
+    loading,
+    error,
+    isFetching,
+    refetch,
+    addUrl,
+    deleteUrl,
+    userUrls,
+    changeActiveUrl,
+    defaultUrls: DEFAULT_M3U_URLS,
+    clearCache,
+    searchChannels,
+    getChannelsByGroup,
+    getChannelByUrl,
+    getTotalChannels,
+    getGroupsCount,
+    isValidUrl,
+    getLicenseConfig,
+    getDASHChannels,
+    getHLSChannels,
+    getEncryptedChannels,
   };
 };
 
