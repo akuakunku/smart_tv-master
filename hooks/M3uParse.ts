@@ -161,8 +161,8 @@ interface CacheData {
 }
 
 const DEFAULT_M3U_URLS = [
-  { name: "Backup", url: "https://raw.githubusercontent.com/chesko21/tv-online-m3u/refs/heads/my-repo/Playlist.m3u", enabled: true },
-  { name: "Backup1", url: "https://raw.githubusercontent.com/mimipipi22/lalajo/refs/heads/main/playlist25", enabled: false }
+  { name: "Backup", url: "https://raw.githubusercontent.com/chesko21/tv-online-m3u/refs/heads/my-repo/Playlist.m3u", enabled: false },
+  { name: "Backup1", url: "https://raw.githubusercontent.com/mimipipi22/lalajo/refs/heads/main/playlist25", enabled: true }
 ];
 
 const CACHE_KEY = "m3u_channels_cache";
